@@ -1,0 +1,7 @@
+# Editable install with the dev extra (domonic, pytest, pywebview).
+-e .[dev]
+
+# Release tooling.
+build
+twine
+flake8

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "domonic-libs"
+version = "0.0.1"
+description = "DOM-focused Python ports and an optional pywebview app wrapper built on domonic"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md"]
+authors = [
+    { name = "byteface", email = "byteface@googlemail.com" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    # 1.5.0 adds off-DOM getBBox / getComputedTextLength and the d3-shape /
+    # d3-scale ports the Mermaid renderers need.
+    "domonic>=1.5.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Software Development :: User Interfaces",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+
+[project.scripts]
+dlx = "domonic_libs.cli:main"
+domonic-libs = "domonic_libs.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/byteface/domonic-libs"
+Source = "https://github.com/byteface/domonic-libs"
+Tracker = "https://github.com/byteface/domonic-libs/issues"
+Examples = "https://github.com/byteface/domonic-libs/tree/v0.0.1/examples"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pywebview>=5.0",
+]
+app = [
+    "pywebview>=5.0",
+]
+examples = [
+    "pywebview>=5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+domonic_libs = ["py.typed"]
