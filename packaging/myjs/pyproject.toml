@@ -1,0 +1,65 @@
+# Build config for the standalone `myjs` distribution.
+#
+# `src` here is a symlink to ../../src, so src/myjs is the single source of
+# truth and this project packages only `myjs*`. Build with `make myjs-build`
+# (or `python -m build packaging/myjs`); dev-install with `make myjs-install`.
+# The package depends on `domonic-libs` for the acorn parser + tree-walking
+# interpreter (`domonic_libs.acorn`) and, transitively, on `domonic`.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "myjs"
+dynamic = ["version"]   # shares the repo-root VERSION (symlinked here as ./VERSION)
+description = "A JavaScript interpreter for Python -- run .js against a DOM, call native C via ffi, reach the Python ecosystem"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "byteface", email = "byteface@googlemail.com" },
+]
+requires-python = ">=3.10"
+keywords = ["javascript", "interpreter", "ecmascript", "acorn", "ffi", "ctypes", "dom", "repl", "domonic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: JavaScript",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Interpreters",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    # myjs and domonic-libs are released in lockstep from the repo-root VERSION;
+    # `make bump` keeps this floor in step.
+    "domonic-libs>=0.0.2",
+]
+
+[project.optional-dependencies]
+gui = ["pywebview>=5.0"]
+
+[project.scripts]
+myjs = "myjs.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/byteface/domonic-libs/tree/master/src/myjs"
+Source = "https://github.com/byteface/domonic-libs"
+Documentation = "https://github.com/byteface/domonic-libs/blob/master/docs/myjs.md"
+Tracker = "https://github.com/byteface/domonic-libs/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["myjs*"]
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
