@@ -1,6 +1,6 @@
 import math
 from domonic.dom import document
-from domonic.html import div, h1, input, label, main, option, select, style
+from domonic.html import main
 from domonic_libs import App, preact
 from domonic_libs.preact import h
 
@@ -31,7 +31,8 @@ def render_ui():
     s = state
     points_str = generate_points(s["shape"], s["petals"])
     
-    # Passing 'svg' and 'polygon' as string names bypasses module import path errors
+    # Tags are strings so preact's h() treats them as host elements. A callable
+    # type (e.g. the domonic.svg.svg class) would be rendered as a component.
     ui = h("div", {"style": "display: flex; gap: 30px; align-items: center; padding: 40px; background: #090d16; min-height: 100vh;"},
         h("svg", {"width": "400", "height": "400", "style": "background: #0f172a; border-radius: 16px; border: 1px solid #1e293b;"},
             h("polygon", {"points": points_str, "fill": "#38bdf822", "stroke": "#38bdf8", "stroke-width": "2"})

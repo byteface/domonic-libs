@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "domonic-libs"
-version = "0.0.1"
+dynamic = ["version"]   # single source of truth: the repo-root VERSION file
 description = "DOM-focused Python ports and an optional pywebview app wrapper built on domonic"
 readme = "README.md"
 license = "MIT"
@@ -14,9 +14,11 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # 1.5.0 adds off-DOM getBBox / getComputedTextLength and the d3-shape /
-    # d3-scale ports the Mermaid renderers need.
-    "domonic>=1.5.0",
+    # 1.5.0: off-DOM getBBox / getComputedTextLength + the d3-shape / d3-scale
+    # ports the Mermaid renderers need.
+    # 1.6.0: UTF-16 String semantics, static String.fromCharCode, numeric
+    # charCodeAt-past-end, [^] regex translation -- the acorn tokenizer port.
+    "domonic>=1.6.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -39,12 +41,13 @@ classifiers = [
 [project.scripts]
 dlx = "domonic_libs.cli:main"
 domonic-libs = "domonic_libs.cli:main"
+# `myjs` ships as its own distribution (packaging/myjs/) -- `pip install myjs`.
 
 [project.urls]
 Homepage = "https://github.com/byteface/domonic-libs"
 Source = "https://github.com/byteface/domonic-libs"
 Tracker = "https://github.com/byteface/domonic-libs/issues"
-Examples = "https://github.com/byteface/domonic-libs/tree/v0.0.1/examples"
+Examples = "https://github.com/byteface/domonic-libs/tree/master/examples"
 
 [project.optional-dependencies]
 dev = [
@@ -58,8 +61,14 @@ examples = [
     "pywebview>=5.0",
 ]
 
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
+
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["domonic_libs*"]   # `myjs` is packaged separately (packaging/myjs/)
 
 [tool.setuptools.package-data]
 domonic_libs = ["py.typed"]
+"domonic_libs.conformance" = ["suite/*.js"]
+"domonic_libs.js262" = ["suite/*.js"]

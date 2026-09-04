@@ -1,6 +1,10 @@
 # Editable install with the dev extra (domonic, pytest, pywebview).
 -e .[dev]
 
+# `myjs` ships as its own distribution; install it editable for the test suite
+# (tests/test_myjs.py). Its `domonic-libs` dep is satisfied by `-e .[dev]` above.
+-e ./packaging/myjs
+
 # Release tooling.
 build
 twine

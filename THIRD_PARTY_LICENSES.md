@@ -14,6 +14,8 @@
 | `domonic_libs.preact` | [preactjs/preact](https://github.com/preactjs/preact) | MIT |
 | `domonic_libs.mermaid` | [mermaid-js/mermaid](https://github.com/mermaid-js/mermaid) | MIT |
 | `domonic_libs.dagre` | [dagrejs/dagre](https://github.com/dagrejs/dagre) + [dagrejs/graphlib](https://github.com/dagrejs/graphlib) | MIT |
+| `domonic_libs.acorn` | [acornjs/acorn](https://github.com/acornjs/acorn) | MIT |
+| `domonic_libs.acorn.jsx` | [acornjs/acorn-jsx](https://github.com/acornjs/acorn-jsx) | MIT |
 
 The vendored upstream test fixtures under `tests/fixtures/` are covered by the same license as the project they were taken from.
 
@@ -251,6 +253,7 @@ Applies to: `domonic_libs.marked`, `domonic_libs.turndown` (and `turndown-plugin
 
 Copyright holders, per project:
 
+- acorn / acorn-jsx: Copyright (c) 2012-2024 by various contributors (see acorn's AUTHORS file)
 - marked: Copyright (c) 2018+ MarkedJS contributors; (c) 2011-2018 Christopher Jeffrey
 - turndown / turndown-plugin-gfm: Copyright (c) 2017 Dom Christie
 - validator.js: Copyright (c) 2018 Chris O'Hara <cohara87@gmail.com>

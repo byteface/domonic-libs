@@ -2,7 +2,7 @@
 
 Running the ports and examples in this repo is partly a way to stress-test [domonic](https://github.com/byteface/domonic). This file collects the DOM behaviours that bit us, small and reproducible, so they can be reported and fixed in future domonic releases. Each entry has a minimal repro, what happens, and what a browser / the DOM spec does instead.
 
-Most of the original list was fixed in **domonic 1.5.0** -- see [Resolved](#resolved-in-domonic-150) at the bottom. What remains:
+Most of the original list was fixed in **domonic 1.5.0** and **1.6.x** -- see the Resolved sections at the bottom. The curated CSSOM / DOM conformance suite (`python -m domonic_libs.conformance`, scorecard in `docs/conformance.md`) is at 46/49. What remains:
 
 ## 1. `parseString(parser="auto")` silently cascades through absent parsers
 
@@ -74,6 +74,33 @@ str(div(_title="a<b>c"))                     # 'title="a&lt;b&gt;c"'
 ```
 
 A port that must match browser output byte-for-byte (like DOMPurify's fixtures) should serialise through `outerHTML`, not `str(node)`.
+
+## 8. A CSS shorthand does not contribute its longhands to `style.length`
+
+The only survivor of the CSSOM batch. Setting `margin` now correctly populates `marginTop` etc. (fixed since this was logged), but the shorthand still counts as a single entry:
+
+```python
+from domonic.html import div
+s = div().style
+s.margin = "1px 2px 3px 4px"
+s.marginTop            # '1px'   -- correct now
+s.length               # 1       (browser: 4 -- stored as the four longhands)
+```
+
+Per CSSOM a shorthand is stored *as* its longhand declarations, so `length` should be 4 and `s.margin` should re-serialise from four equal longhands. `src/domonic_libs/conformance/suite/cssom-shorthand.js` covers it; 3 of its 4 assertions still fail here.
+
+---
+
+## Resolved in domonic 1.6.x
+
+Wrinkles #9-#12 (from the CSSOM/DOM conformance suite) were fixed:
+
+* **`cssText` set via the setter re-serialises** with the trailing `;` / single-space form, matching the `setProperty` path.
+* **The `style` IDL attribute is backed by the `style` content attribute** -- `setAttribute("style", "")` / `removeAttribute("style")` clears the declaration.
+* **`Element.getAttributeNames()` is implemented.**
+* **Attribute names are ASCII-lower-cased on HTML elements** -- `setAttribute("FOO", "1")` then `getAttribute("foo")` returns `"1"`.
+
+The conformance suite (`python -m domonic_libs.conformance`) now sits at 46/49.
 
 ---
 

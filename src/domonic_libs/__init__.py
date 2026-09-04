@@ -3,7 +3,19 @@ from .readability import Readability
 from .turndown import TurndownService, turndown
 from . import validator
 
-__version__ = "0.0.1"
+def _read_version() -> str:
+    from pathlib import Path
+    f = Path(__file__).resolve().parents[2] / "VERSION"   # repo-root source checkout
+    if f.is_file():
+        return f.read_text().strip()
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("domonic-libs")
+    except PackageNotFoundError:
+        return "0+unknown"
+
+
+__version__ = _read_version()
 
 __all__ = [
     "App",
