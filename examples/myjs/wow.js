@@ -1,7 +1,7 @@
-// ===================================================================
-//  This is JavaScript. There is no Node. It is running inside Python.
-//  Run it:   myjs examples/myjs_wow.js
-// ===================================================================
+// The whole surface: machine info, shell, files, py, live fetch, C, DOM.
+//   myjs examples/myjs/wow.js
+//
+// This is JavaScript. There is no Node. It is running inside Python.
 
 // --- 1. it knows your actual machine --------------------------------
 console.log(`Host    : ${os.type()} ${os.arch()}  (${os.cpus().length} cores, ${(os.totalmem() / 1e9).toFixed(0)} GB)`);

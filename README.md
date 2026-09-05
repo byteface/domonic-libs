@@ -242,10 +242,10 @@ doc, log = run_js("const b = document.createElement('button');"
 str(doc.body)  # '<body><button>Go</button></body>'
 ```
 
-A faithful port of [acorn](https://github.com/acornjs/acorn) 8.18.0 (tokenizer, the `regexp.js` grammar validator, the recursive-descent parser) plus the [acorn-jsx](https://github.com/acornjs/acorn-jsx) plugin -- a pure-Python ECMAScript / JSX front end producing an ESTree tree. Its main job is stress-testing `domonic.javascript`; every wrinkle it surfaced was fixed in domonic 1.6 ([docs/javascript-wrinkles.md](docs/javascript-wrinkles.md)).
+A faithful port of [acorn](https://github.com/acornjs/acorn) 8.18.0 (tokenizer, the `regexp.js` grammar validator, the recursive-descent parser) plus the [acorn-jsx](https://github.com/acornjs/acorn-jsx) plugin -- a pure-Python ECMAScript / JSX front end producing an ESTree tree. Its main job is stress-testing `domonic.javascript`; most of what it surfaced was fixed in domonic 1.6 and 1.7, and it keeps finding more ([docs/javascript-wrinkles.md](docs/javascript-wrinkles.md)).
 
 - **`jsx_to_python`** rewrites the JSX *markup* layer to `domonic.html` factories (or `h(...)` with `mode="h"`), passing JS expressions inside `{ ... }` through verbatim.
-- **`interpret.run_js`** is a tree-walking evaluator for the practical subset of ECMAScript -- expressions, functions + closures, control flow, objects / arrays, `this`, `new`, `class` (with `extends` / `super` / fields), and the JS coercion rules. It runs against the **whole** domonic runtime: the global object exposes ~190 constructors auto-collected from `domonic.javascript` / `domonic.webapi.*` / `domonic.dom` (`URL`, `Headers`, `Request` / `Response`, `Blob` / `FileReader`, `XMLHttpRequest`, `EventSource`, `Event` / `MouseEvent`, `MutationObserver` / `ResizeObserver` / `IntersectionObserver`, `Range` / `TreeWalker`, `DOMRect` / `DOMMatrix`, `XPathEvaluator`, `Path2D`, `FontFace`, `Notification`, `Worker`, …), forwards to domonic's real `window` for the rest (`location`, `navigator`, `atob`, `getComputedStyle`, `setTimeout`), and reaches the element surface directly -- `el.style` / `getComputedStyle` (CSSOM in `style.py`), `el.classList` / `el.dataset`, `el.addEventListener` + `dispatchEvent`. `console` and `document` are isolated per run; `document` also forwards to a real backing `Document` (`createComment`, `createEvent`, `evaluate`, …). `document.createElement(...).appendChild(...)` builds a real Python object tree. There is a pragmatic event loop -- `Promise`, `async` / `await`, `setTimeout` -- with microtasks ahead of timers, and ES module `import` / `export`. Not covered: generators, real prototype chains, `Proxy` / `Symbol` / accessors. Running real DOM scripts this way is a live stress test of `style.py`, `domonic.events`, `domonic.webapi`, and the DOM.
+- **`interpret.run_js`** is a tree-walking evaluator for the practical subset of ECMAScript -- expressions, functions + closures, control flow, objects / arrays, `this`, `new`, `class` (with `extends` / `super` / fields), and the JS coercion rules. It runs against the **whole** domonic runtime: the global object exposes ~190 constructors auto-collected from `domonic.javascript` / `domonic.webapi.*` / `domonic.dom` (`URL`, `Headers`, `Request` / `Response`, `Blob` / `FileReader`, `XMLHttpRequest`, `EventSource`, `Event` / `MouseEvent`, `MutationObserver` / `ResizeObserver` / `IntersectionObserver`, `Range` / `TreeWalker`, `DOMRect` / `DOMMatrix`, `XPathEvaluator`, `Path2D`, `FontFace`, `Notification`, `Worker`, …), forwards to domonic's real `window` for the rest (`location`, `navigator`, `atob`, `getComputedStyle`, `setTimeout`), and reaches the element surface directly -- `el.style` / `getComputedStyle` (CSSOM in `style.py`), `el.classList` / `el.dataset`, `el.addEventListener` + `dispatchEvent`. `console` and `document` are isolated per run; `document` also forwards to a real backing `Document` (`createComment`, `createEvent`, `evaluate`, …). `document.createElement(...).appendChild(...)` builds a real Python object tree. There is a pragmatic event loop -- `Promise`, `async` / `await`, `setTimeout` -- with microtasks ahead of timers, and ES module `import` / `export`. Generators, ES5-style prototype chains (`Foo.prototype.bar = ...`), `Symbol`, and getter/setter accessors all work; not covered: `Proxy`, `with`. Running real DOM scripts this way is a live stress test of `style.py`, `domonic.events`, `domonic.webapi`, and the DOM.
 
 Thrown errors carry a `js_line` and a `js_trace` (call stack), and the `js_demo` workbench surfaces both.
 
@@ -253,16 +253,17 @@ Nothing here is exported from `import domonic_libs` (it stays lean). `examples/a
 
 ### conformance
 
-Two scorecards measure how close the JS + DOM layer is to spec, each a curated battery run end to end through the interpreter with a CI gate against a baseline:
+Three scorecards measure how close the JS + DOM layer is to spec, each a curated battery run end to end through the interpreter with a CI gate against a baseline:
 
-- `python -m domonic_libs.conformance` — CSSOM / DOM assertions (`el.style` / `CSSStyleDeclaration`, `classList`, `dataset`, attribute reflection) modelled on Web Platform Tests → [docs/conformance.md](docs/conformance.md) (46/49).
-- `python -m domonic_libs.js262` — a test262-style battery over language expressions / statements (closures, classes, generators, `async`/`await`, destructuring, modules) and the `Array` / `String` / `Object` / `Number` / `Math` / `JSON` / `Promise` / `RegExp` built-ins → [docs/js-compliance.md](docs/js-compliance.md) (100%).
+- `python -m domonic_libs.conformance` — CSSOM / DOM assertions (`el.style` / `CSSStyleDeclaration`, `classList`, `dataset`, attribute reflection) modelled on Web Platform Tests → [docs/conformance.md](docs/conformance.md) (50/50).
+- `python -m domonic_libs.js262` — a test262-style battery over language expressions / statements (closures, classes, generators, `async`/`await`, destructuring, modules) and the `Array` / `String` / `Object` / `Number` / `Math` / `JSON` / `Promise` / `RegExp` built-ins → [docs/js-compliance.md](docs/js-compliance.md) (175/175, 100%).
+- `python -m domonic_libs.realworld` — real, unmodified, live-fetched npm library bundles (lodash, d3, zod, katex, luxon, ...) run through the interpreter and smoke-tested, the other half of the same methodology: feed it something huge and popular that nobody wrote with this interpreter in mind, and see what breaks → [docs/real-world.md](docs/real-world.md).
 
 A failing check is an interpreter gap or a domonic gap; the message says which, and [docs/domonic-wrinkles.md](docs/domonic-wrinkles.md) / [docs/javascript-wrinkles.md](docs/javascript-wrinkles.md) track the domonic ones.
 
 ## myjs
 
-`myjs` is a JavaScript interpreter packaged on top of the acorn port and its evaluator. It ships as **its own PyPI distribution** — `pip install myjs` (built from `src/myjs/` via `packaging/myjs/`, released after `domonic-libs`; see [docs/publishing.md](docs/publishing.md)). `myjs` with no arguments starts a REPL; `myjs script.js` executes a file; `myjs -e "<code>"` evaluates a snippet.
+`myjs` is a JavaScript interpreter packaged on top of the acorn port and its evaluator. It ships as **its own PyPI distribution** — `pip install myjs` (built from `src/myjs/` via `packaging/myjs/`, released in lockstep with `domonic-libs`; see [docs/publishing.md](docs/publishing.md)). `myjs` with no arguments starts a REPL; `myjs script.js` executes a file; `myjs page.html` renders an HTML page headlessly; `myjs -e "<code>"` evaluates a snippet.
 
 ```python
 import myjs
@@ -271,8 +272,15 @@ myjs.eval("1 + 2 * 3")                 # -> 7
 myjs.run("script.js")
 
 s = myjs.Session()                     # isolated global scope
-s.eval("const x = 21;")
-s.eval("x * 2")                        # -> 42
+s.eval("const x = 21;"); s.eval("x * 2")   # -> 42
+
+# headless HTML: parse a page, run its <script>s against a real DOM, drive it
+page = myjs.Page.load("https://example.com/")    # a URL (fetches HTML + CSS + JS) or a local file
+page.eval("getComputedStyle(document.body).color")   # the fetched CSS, applied
+page.fill("#search", "widgets").submit("#form")
+page.wait_for(".result")
+page.text(".result")                            # like Puppeteer, no browser
+myjs.render("index.html", strip_scripts=True)   # -> rendered HTML string
 ```
 
 Scripts get the whole domonic DOM (`document`, `window`, ~190 constructors), an event loop (`Promise`, `async` / `await`, `setTimeout`), ES modules (`import` / `export`, with bare specifiers resolving to Python modules), a `WebSocket` client, a set of host bindings -- `fs`, `path`, `sh`, `http`, an asynchronous `fetch`, `os` (Node-flavoured), `process`, `say` / `notify` / `open`, and **`py`** for reaching into the entire Python ecosystem (`py.import("numpy")`) -- plus an **`ffi`** global that calls native C libraries through Python's `ctypes` -- no node-gyp, no C compiler:
@@ -290,7 +298,7 @@ console.log(buf.value);
 
 `ffi.loadLibrary` takes a short name (`"c"`, `"m"`), a path (`./libfoo.so`), or a macOS framework name; `ffi.createStringBuffer`, `ffi.callback` (wrap a JS function as a C function pointer), `ffi.cast` / `ffi.sizeof` / `ffi.string`, and the `ffi.types` table cover the rest. Thrown errors surface as `myjs.JSError` with `js_name` / `js_line` / `js_trace`. `myjs --gui app.js` renders the DOM the script builds in a native window (needs `[app]`).
 
-Runnable tours: `myjs_wow.js` (the whole surface), `myjs_async.js` (event loop, concurrent `Promise.all(fetch...)`), `myjs_realtime.js` (`WebSocket` + `setInterval`), `myjs_gui.js` (`--gui` window), `myjs_server.js` (a web server in JS whose HTML is built with `document.createElement`), `myjs_ffi.js` (native C). Full reference: [docs/myjs.md](docs/myjs.md).
+Runnable tours — `myjs examples` lists all of them (`myjs examples <name> --run`): `wow.js` (the whole surface), `cockpit.js` (a live control center — dashboard, killable/respawnable workers, raw keypresses), `gpu.js` (zero-copy: a live numpy buffer's raw pointer becomes GPU texture data directly), `atoms.js` (a real website's real physics, fetched live and rendered with raylib), `hn.js` (Hacker News front page, live API + `Promise.all`), `sqlite.js` (SQL via `py.import("sqlite3")`), `words.js` (fetch a book, word-frequency table), `todo.js` (a real CLI tool), `chart.js` (an SVG bar chart via the DOM API), `async.js` (event loop, concurrent `Promise.all(fetch...)`), `realtime.js` (`WebSocket` + `setInterval`), `render.html` (headless render), `live.py` (hit a real live website — fetch its HTML + CSS + JS and run it), `automate.py` / `scrape.py` (drive or scrape a page's JS from Python — Puppeteer without a browser), `gui.js` (`--gui` window), `server.js` (a web server in JS), `ffi.js` (native C). Full reference: [docs/myjs.md](docs/myjs.md).
 
 ## App Wrapper
 

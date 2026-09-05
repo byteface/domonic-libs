@@ -1,6 +1,5 @@
-// A web server, in JavaScript, with no Node -- and the HTML is built
-// with the DOM API. Run it:   myjs examples/myjs_server.js
-// then open http://127.0.0.1:8080 in your browser.  Ctrl-C to stop.
+// A web server in JavaScript, no Node -- HTML built with document.createElement.
+//   myjs examples/myjs/server.js   (then open http://127.0.0.1:8080, Ctrl-C to stop)
 
 let hits = 0;
 
@@ -27,7 +26,7 @@ http.serve(8080, (req) => {
   const info = document.createElement("p");
   info.textContent = `${req.method} ${req.path} - request #${hits} - ${os.type()} ${os.arch()}`;
   const quote = document.createElement("blockquote");
-  quote.textContent = fetchSync("https://api.github.com/zen").text;
+  quote.textContent = fetchSync("https://api.github.com/zen").text();
 
   page.appendChild(h1);
   page.appendChild(info);

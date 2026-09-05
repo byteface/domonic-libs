@@ -32,7 +32,7 @@ __version__ = _read_version()
 
 from ._engine import JSError, Session
 
-__all__ = ["Session", "JSError", "eval", "run", "repl", "__version__"]
+__all__ = ["Session", "JSError", "Page", "eval", "run", "import_js", "render", "repl", "__version__"]
 
 _shared: Session | None = None
 
@@ -56,6 +56,36 @@ def eval(src: str, *, scope: dict | None = None):
 def run(path: str, *, scope: dict | None = None):
     """Execute a ``.js`` file. Returns its completion value."""
     return Session(scope=scope).run_file(path)
+
+
+def import_js(path: str, *, scope: dict | None = None):
+    """Run a ``.js`` file and return its ``export``ed names as a real,
+    directly usable object -- ``mod.someFunction(1, 2)`` calls the actual JS
+    function from plain Python, no bridge, no serialization (a JS function is
+    already a real, callable Python object).
+
+        # math.js: export function double(x) { return x * 2; }
+        mod = myjs.import_js("math.js")
+        mod.double(21)          # -> 42
+    """
+    s = Session(scope=scope)
+    s.run_file(path)
+    return s.exports
+
+
+def render(source_or_path, *, strip_scripts: bool = False, **kw) -> str:
+    """Render an HTML file/string headlessly (run its ``<script>``s against a
+    DOM) and return the resulting HTML. See :class:`myjs.Page` for inspection."""
+    from .html import render as _render
+
+    return _render(source_or_path, strip_scripts=strip_scripts, **kw)
+
+
+def __getattr__(name):   # lazy: `from myjs import Page`
+    if name == "Page":
+        from .html import Page
+        return Page
+    raise AttributeError(name)
 
 
 def repl(**kwargs) -> int:

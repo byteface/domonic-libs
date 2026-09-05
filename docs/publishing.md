@@ -5,7 +5,7 @@ This repo produces **two** PyPI distributions from one source tree, kept in
 
 | Distribution | Source | Provides | Depends on |
 | --- | --- | --- | --- |
-| [`domonic-libs`](https://pypi.org/project/domonic-libs/) | `src/domonic_libs/` | the ports (DOMPurify, marked, preact, mermaid, dagre, …), the `acorn` parser + interpreter, the conformance / js262 runners, `dlx` CLI | `domonic>=1.6.0` |
+| [`domonic-libs`](https://pypi.org/project/domonic-libs/) | `src/domonic_libs/` | the ports (DOMPurify, marked, preact, mermaid, dagre, …), the `acorn` parser + interpreter, the conformance / js262 runners, `dlx` CLI | `domonic>=1.7.0` |
 | [`myjs`](https://pypi.org/project/myjs/) | `src/myjs/` (built via `packaging/myjs/`) | the `myjs` JavaScript runtime + REPL + `ffi` + host bindings | `domonic-libs>=<same version>` |
 
 `VERSION` is the only place the number lives:
@@ -22,7 +22,11 @@ domonic X  →  domonic-libs <VERSION>  →  myjs <VERSION>
 ```
 
 Each package is only installable from PyPI once the one to its left is up.
-(`domonic 1.6.0` is published; the main `pyproject.toml` pins `domonic>=1.6.0`.)
+The main `pyproject.toml` pins `domonic>=1.7.0` (this release's fixes --
+`String`/`Number` as real `str`/`float` subclasses, `getComputedStyle`
+dot-access, JSON-number normalisation, uppercase `tagName`, ... -- depend on
+1.7.0 behaviour a 1.6.0 install doesn't have). **`domonic 1.7.0` is published**,
+so `domonic-libs 0.0.3` / `myjs 0.0.3` are clear to go out.
 
 ## Cutting a release
 

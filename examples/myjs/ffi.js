@@ -1,7 +1,7 @@
-// Run me with:  myjs examples/myjs_ffi.js
+// JavaScript reaching straight into native C libraries via `ffi` (ctypes).
+//   myjs examples/myjs/ffi.js
 //
-// JavaScript reaching straight into native C libraries through myjs's `ffi`
-// global (Python ctypes under the hood -- no node-gyp, no C compiler).
+// No node-gyp, no C compiler -- just `ffi.loadLibrary`.
 
 const libc = ffi.loadLibrary("c");
 
@@ -15,6 +15,11 @@ const libm = ffi.loadLibrary("m");
 libm.sqrt.argtypes = [ffi.types.double];
 libm.sqrt.restype = ffi.types.double;
 console.log("C  sqrt(2)    =", libm.sqrt(2));
+
+// the same two declarations, in one line -- and ffi.libc()/libm() resolve
+// the right library on Linux, macOS, or Windows without an if/platform check
+const tgamma = ffi.libm().fn("tgamma", "double", ["double"]);
+console.log("C  tgamma(11) =", tgamma(11), "(= 10!)");
 
 // mutate a C string buffer in place
 const buf = ffi.createStringBuffer(64);

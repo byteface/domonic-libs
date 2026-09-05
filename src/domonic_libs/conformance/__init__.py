@@ -25,9 +25,9 @@ SUITE_DIR = Path(__file__).parent / "suite"
 # Lowest pass counts we accept per file -- CI fails if any file regresses below
 # its baseline. Raise these as domonic improves; never lower them silently.
 BASELINE = {
-    "cssom-shorthand.js": 0,        # domonic stores shorthands verbatim (no longhand expansion)
-    "cssom-style-declaration.js": 12,
-    "dom-attributes.js": 8,         # no getAttributeNames; attr names not lower-cased
+    "cssom-shorthand.js": 2,        # longhand<->shorthand collapse + `0`->`0px` still open
+    "cssom-style-declaration.js": 15,
+    "dom-attributes.js": 10,
     "dom-classlist.js": 14,
     "dom-dataset.js": 7,
 }

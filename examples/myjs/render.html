@@ -1,0 +1,52 @@
+<!-- Headless render: <script type=module> + relative import build a table.
+     myjs examples/myjs/render.html --strip-scripts -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Weekly Report</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #ddd; }
+    .up { color: #16a34a; } .down { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <h1 id="title">…</h1>
+  <p id="summary"></p>
+  <table><thead><tr><th>Metric</th><th>Value</th><th>Δ</th></tr></thead><tbody id="rows"></tbody></table>
+
+  <script type="module">
+    // Data would normally come from `fetch` -- inlined here for a self-contained demo.
+    import { pct, trend } from "./report-util.js";
+
+    const week = 32;
+    const metrics = [
+      { name: "Signups",       value: 1284, prev: 1102 },
+      { name: "Active users",  value: 8940, prev: 9210 },
+      { name: "Revenue (USD)", value: 41250, prev: 38900 },
+      { name: "Churn",         value: 43, prev: 51 },
+    ];
+
+    document.getElementById("title").textContent = `Weekly Report — week ${week}`;
+
+    const rows = document.getElementById("rows");
+    let improved = 0;
+    for (const m of metrics) {
+      const delta = m.value - m.prev;
+      const better = m.name === "Churn" ? delta < 0 : delta > 0;
+      if (better) improved++;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td>${m.name}</td>` +
+        `<td>${m.value.toLocaleString?.() ?? m.value}</td>` +
+        `<td class="${better ? "up" : "down"}">${trend(delta)} ${pct(delta, m.prev)}</td>`;
+      rows.appendChild(tr);
+    }
+
+    document.getElementById("summary").textContent =
+      `${improved} of ${metrics.length} metrics improved week over week.`;
+  </script>
+</body>
+</html>

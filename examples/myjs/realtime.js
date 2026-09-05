@@ -1,5 +1,5 @@
 // Real WebSockets, hand-rolled (RFC 6455), no dependencies.
-//   myjs examples/myjs_realtime.js
+//   myjs examples/myjs/realtime.js
 
 const ws = new WebSocket("wss://ws.postman-echo.com/raw");
 

@@ -1,5 +1,5 @@
-// Build a UI with the DOM API, then:   myjs --gui examples/myjs_gui.js
-// A native window opens showing exactly what this script assembled.
+// Build a UI with the DOM API; --gui shows it in a native window.
+//   myjs --gui examples/myjs/gui.js
 
 document.title = "myjs · system report";
 

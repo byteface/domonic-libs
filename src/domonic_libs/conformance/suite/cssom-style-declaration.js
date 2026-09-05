@@ -46,10 +46,17 @@ test(function () {
 test(function () {
   var s = el().style;
   s.setProperty("color", "red");
-  s.setProperty("padding", "1px");
-  assert_equals(s.length, 2, "length counts declared properties");
-  assert_in_array(s.item(0), ["color", "padding"], "item(0) names a property");
+  s.setProperty("margin-top", "1px");
+  assert_equals(s.length, 2, "length counts declared longhand properties");
+  assert_in_array(s.item(0), ["color", "margin-top"], "item(0) names a property");
 }, "length and item()");
+
+test(function () {
+  var s = el().style;
+  s.setProperty("padding", "1px");
+  // CSSOM stores a shorthand as its longhands
+  assert_equals(s.length, 4, "the padding shorthand expands to four longhands");
+}, "shorthand contributes its longhands to length");
 
 test(function () {
   var s = el().style;

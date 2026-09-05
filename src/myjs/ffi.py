@@ -116,6 +116,16 @@ class CFunc:
         return f"<ffi function {self._name}>"
 
 
+def _resolve_type(t):
+    """A ctypes type from ``ffi.types`` (already correct), or a plain type
+    name string (``"double"``, ``"int"``, ``"string"``, ...) for `.fn()`."""
+    if isinstance(t, str):
+        if t not in TYPES:
+            raise ValueError(f"ffi: unknown type {t!r} (see ffi.types for the full list)")
+        return TYPES[t]
+    return t
+
+
 class Library:
     """A loaded shared library. ``lib.<name>`` resolves a :class:`CFunc`."""
 
@@ -134,6 +144,31 @@ class Library:
             except AttributeError:
                 raise AttributeError(f"{self._name!r} has no symbol {key!r}")
         return cache[key]
+
+    def fn(self, name, restype=None, argtypes=None):
+        """Resolve ``name`` and set its ``restype`` / ``argtypes`` in one call
+        -- either as ``ffi.types.x`` or a plain string, matching the two- or
+        three-statement form this replaces::
+
+            const tgamma = libm.fn("tgamma", "double", ["double"]);
+            tgamma(11);
+
+            // equivalent to:
+            libm.tgamma.argtypes = [ffi.types.double];
+            libm.tgamma.restype = ffi.types.double;
+            libm.tgamma(11);
+
+        There's no way to *infer* these from the call site: a whole-number
+        JS value (``11``) can't tell you whether the C function wants an
+        ``int`` or a ``double`` -- that's an ABI fact about the function, not
+        the argument, so it still has to be declared once, just not verbosely.
+        """
+        f = getattr(self, name)
+        if argtypes is not None:
+            f.argtypes = [_resolve_type(t) for t in argtypes]
+        if restype is not None:
+            f.restype = _resolve_type(restype)
+        return f
 
     def __repr__(self):
         return f"<ffi library {self._name!r}>"
@@ -170,12 +205,22 @@ class Buffer:
 
 # --- loading -----------------------------------------------------------------
 
+# Windows has no "libc"/"libm" .dll to find_library() -- the C runtime (and
+# libm's functions) live in msvcrt instead, so "c"/"m" need a direct alias.
+_WIN32_ALIASES = {"c": "msvcrt", "m": "msvcrt"}
+
+
 def load_library(name):
     """Load a shared library by short name (``"c"``, ``"m"``), by path
     (``"./libfoo.so"``), or -- on macOS -- by system-framework name
-    (``"CoreFoundation"``)."""
+    (``"CoreFoundation"``). ``"c"`` / ``"m"`` resolve to the right thing on
+    every platform: ``libc.so.6`` (Linux), ``libSystem.dylib`` (macOS), or
+    ``msvcrt`` (Windows) -- see also the ``ffi.libc()`` / ``ffi.libm()``
+    shorthands below."""
     if os.sep in str(name) or str(name).endswith((".so", ".dylib", ".dll")):
         return Library(ctypes.CDLL(name), name)
+    if sys.platform == "win32" and str(name) in _WIN32_ALIASES:
+        return Library(ctypes.CDLL(_WIN32_ALIASES[str(name)]), name)
     found = ctypes.util.find_library(name)
     if found:
         return Library(ctypes.CDLL(found), name)
@@ -220,6 +265,8 @@ def c_string(ptr):
 
 FFI = {
     "loadLibrary": load_library,
+    "libc": lambda: load_library("c"),   # the standard C library, whatever it's called here
+    "libm": lambda: load_library("m"),   # math functions -- folded into libc on Windows already
     "createStringBuffer": create_string_buffer,
     "callback": make_callback,
     "string": c_string,

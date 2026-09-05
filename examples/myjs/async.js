@@ -1,5 +1,5 @@
 // Real async/await, Promises, and a working event loop.
-//   myjs examples/myjs_async.js
+//   myjs examples/myjs/async.js
 
 // --- timers and microtask ordering (like a browser) -----------------
 console.log("1  sync");
@@ -37,7 +37,7 @@ async function main() {
 
   // Promise.race — whichever endpoint answers first wins
   const fastest = await Promise.race([
-    fetch("https://api.github.com/zen").then((r) => "github: " + r.text),
+    fetch("https://api.github.com/zen").then((r) => "github: " + r.text()),
     fetch("https://www.boredapi.com/api/activity").then((r) => "boredapi: " + r.json().activity),
   ]);
   console.log("\nrace winner:", fastest);

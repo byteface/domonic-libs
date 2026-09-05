@@ -5,8 +5,8 @@ import pytest
 from domonic_libs.acorn.interpret import run_js
 
 
-def out(src):
-    _doc, lines = run_js(src)
+def out(src, commonjs=False):
+    _doc, lines = run_js(src, commonjs=commonjs)
     return lines
 
 
@@ -22,6 +22,145 @@ def out(src):
 ])
 def test_expressions(src, expected):
     assert out(src) == expected
+
+
+def test_sort_with_a_fractional_comparator():
+    # a comparator returning a value between -1 and 1 (e.g. b.v - a.v on two
+    # floats less than 1 apart) must not truncate to 0 and leave the pair
+    # unsorted -- found via a real-world `procs.js` example sorting by MB.
+    assert out(
+        "const a = [{v: 187.8}, {v: 188.0}, {v: 96.1}, {v: 221.7}];\n"
+        "a.sort((x, y) => y.v - x.v);\n"
+        "console.log(a.map(o => o.v).join(','))"
+    ) == ["221.7,188,187.8,96.1"]
+
+
+def test_sloppy_mode_this_defaults_to_the_global_object():
+    # a plain (non-arrow) function called with no receiver gets `this` bound
+    # to the global object in sloppy mode, not undefined -- the classic
+    # `(function(){ this.Foo = ... })()` pattern real-world scripts use to
+    # attach a helper to the global scope depends on this.
+    assert out("console.log(this === window)") == ["true"]
+    assert out(
+        "(function(){ this.attachedGlobal = 42; })();\n"
+        "console.log(attachedGlobal);"
+    ) == ["42"]
+
+
+def test_classic_prototype_based_inheritance():
+    # `function Foo(){}` + `Foo.prototype.bar = ...` -- the pre-ES6 pattern a
+    # huge amount of real-world JS (jQuery plugins, older libraries) still
+    # uses. `new Foo()` has to link the instance to Foo's *current*
+    # prototype object, not a disconnected bare object.
+    assert out(
+        "function Foo(){}\n"
+        "Foo.prototype.bar = function(){ return 42; };\n"
+        "console.log(new Foo().bar());"
+    ) == ["42"]
+    # reassigning .prototype wholesale (the classic base-class-simulation
+    # idiom) has to be picked up too, not just mutating the existing object
+    assert out(
+        "function Foo(){}\n"
+        "Foo.prototype = { bar: function(){ return 43; } };\n"
+        "console.log(new Foo().bar());"
+    ) == ["43"]
+    # a method added to the prototype *after* an instance already exists is
+    # still visible on it -- proves the link is live, not a one-time copy
+    assert out(
+        "function Foo(){}\n"
+        "const f = new Foo();\n"
+        "Foo.prototype.late = function(){ return 'late-ok'; };\n"
+        "console.log(f.late());"
+    ) == ["late-ok"]
+
+
+def test_typeof_symbol():
+    # Symbols are opaque strings under the hood (see _symbol_ctor) -- without
+    # a real typeof case they self-report as "string", and any
+    # `typeof x === "symbol"` feature-detection (extremely common in
+    # real-world libraries -- this is what broke loading ramda/lodash/
+    # mustache/handlebars) silently takes the wrong branch.
+    assert out("console.log(typeof Symbol())") == ["symbol"]
+    assert out("console.log(typeof Symbol.iterator)") == ["symbol"]
+    assert out("console.log(typeof 'a real string')") == ["string"]
+
+
+def test_object_prototype_to_string_is_a_real_standalone_function():
+    # `Object.prototype.toString.call(x)` for robust type-tagging is one of
+    # the most common idioms in real-world JS. It needs `Object.prototype`
+    # to be a real thing you can grab a *reference* off, and that reference
+    # has to read its receiver via `.call`/`.apply`, not whatever it was
+    # looked up on.
+    assert out("console.log(Object.prototype.toString.call([]))") == ["[object Array]"]
+    assert out("console.log(Object.prototype.toString.call(null))") == ["[object Null]"]
+    assert out("console.log(Object.prototype.toString.call(42))") == ["[object Number]"]
+
+
+def test_builtin_prototypes_delegate_to_real_per_type_methods():
+    # `Array`/`String`/`RegExp`/... have no real `.prototype` of their own
+    # (interpreter functions and domonic classes, not authored-in-JS
+    # classes) -- but real-world code commonly borrows a method as a
+    # standalone reference first: `var test = RegExp.prototype.test; test
+    # .call(re, str)` (this exact pattern broke loading mustache.min.js).
+    assert out(
+        "var test = RegExp.prototype.test;\n"
+        "console.log(test.call(/\\S/, 'hi'));"
+    ) == ["true"]
+    assert out(
+        "var slice = Array.prototype.slice;\n"
+        "console.log(JSON.stringify(slice.call([1,2,3,4], 1, 3)));"
+    ) == ["[2,3]"]
+
+
+def test_static_property_assigned_after_class_declaration():
+    # `SomeClass.create = (params) => ...`, attached *outside* the class
+    # body after the fact -- a real, common pattern (this is exactly how
+    # zod attaches its schema factories: `ZodString.create = (params) => new
+    # ZodString(...)`). The write has to land where `js_get`'s JSClass
+    # branch actually looks (`.statics`), not as an inert Python attribute.
+    assert out(
+        "class Foo {}\n"
+        "Foo.create = (x) => x * 2;\n"
+        "console.log(Foo.create(21));"
+    ) == ["42"]
+
+
+def test_class_extending_a_native_error_class():
+    # `class MyError extends Error { constructor(msg) { super(msg); ... } }`
+    # -- extending a real native/domonic class, not one authored in JS. This
+    # used to crash the interpreter outright (`AttributeError`/`KeyError`
+    # walking a superclass chain that assumed every link was a JSClass);
+    # now it should not crash, and `super(msg)` should actually forward the
+    # message to the real Error base.
+    assert out(
+        "class MyError extends Error {\n"
+        "  constructor(msg) { super(msg); this.name = 'MyError'; }\n"
+        "}\n"
+        "let r;\n"
+        "try { throw new MyError('oops'); }\n"
+        "catch (e) { r = [e.name, e.message, e instanceof Error].join(','); }\n"
+        "console.log(r);"
+    ) == ["MyError,oops,true"]
+
+
+def test_labeled_statement_nested_inside_a_plain_loop():
+    # a real parser bug, not an interpreter one: an unlabeled loop pushes a
+    # nameless sentinel (`_loopLabel = {"kind": "loop"}`) onto the parser's
+    # label stack to track break/continue validity; matching a labeled
+    # `continue` against it did *strict* dict indexing (`label["name"]`)
+    # instead of a safe lookup, so a labeled statement nested inside a plain
+    # loop crashed the parser outright with a raw KeyError (this is exactly
+    # what broke parsing d3.min.js).
+    assert out(
+        "let out = [];\n"
+        "for (let i = 0; i < 2; i++) {\n"
+        "  outer: for (let j = 0; j < 2; j++) {\n"
+        "    if (j === 1) continue outer;\n"
+        "    out.push(i + ',' + j);\n"
+        "  }\n"
+        "}\n"
+        "console.log(out.join('|'));"
+    ) == ["0,0|1,0"]
 
 
 def test_functions_and_closures():
@@ -139,6 +278,22 @@ def test_events():
 ])
 def test_webapi_constructors(src, expected):
     assert out(src) == expected
+
+
+def test_typed_array_indexed_assignment_writes_the_real_buffer():
+    # `u[0] = 66` on a Uint8Array (or any array-like Python object with a
+    # real __getitem__/__setitem__) has to go through those, not the generic
+    # setattr fallback -- otherwise it silently creates an attribute
+    # literally named "0" and the backing buffer is never actually touched
+    # (reads still "worked" by reading that same shadow attribute back,
+    # which is what made this easy to miss -- so check the real buffer too).
+    _doc, log = run_js(
+        "const u = new Uint8Array(3);\n"
+        "u[0] = 66; u[1] = 77; u[2] = 255;\n"
+        "console.log(u[0], u[1], u[2], u.length);\n"
+        "console.log(u.buffer.tobytes().hex());\n"
+    )
+    assert log == ["66 77 255 3", "424dff"]
 
 
 # The whole domonic.javascript / webapi.* / dom constructor surface is
@@ -285,7 +440,7 @@ def test_const_reassignment_throws_type_error():
 
     with pytest.raises(JSThrow) as ei:
         run_js("const c = 1; c = 2;")
-    assert ei.value.value["name"] == "TypeError"
+    assert ei.value.value.name == "TypeError"
 
 
 def test_object_freeze_and_hasownproperty():
@@ -311,6 +466,72 @@ def test_astral_strings_are_utf16_indexed():
     ) == ["4 55357 a"]
 
 
+def test_named_function_expression_can_recurse():
+    assert out(
+        "const fact = function f(n) { return n <= 1 ? 1 : n * f(n - 1); };\n"
+        "console.log(fact(5));"
+    ) == ["120"]
+
+
+def test_map_entries_iterate_as_arrays():
+    assert out(
+        "const m = new Map([['a', 1], ['b', 2]]);\n"
+        "console.log(JSON.stringify([...m.entries()]));\n"
+        "console.log([...m].map(([k, v]) => k + v).join(','));"
+    ) == ['[["a",1],["b",2]]', "a1,b2"]
+
+
+def test_custom_symbol_iterator():
+    assert out(
+        "const range = { from: 1, to: 4, [Symbol.iterator]() {\n"
+        "  let c = this.from; const end = this.to;\n"
+        "  return { next: () => c <= end ? { value: c++, done: false } : { done: true } };\n"
+        "} };\n"
+        "console.log([...range].join(','));\n"
+        "let s = 0; for (const n of range) s += n; console.log(s);"
+    ) == ["1,2,3,4", "10"]
+
+
+def test_destructuring_assignment_to_member_targets():
+    assert out(
+        "const a = [3, 1, 2];\n"
+        "[a[0], a[2]] = [a[2], a[0]];\n"
+        "console.log(a.join(','));\n"
+        "const o = {}; [o.x, o.y] = [1, 2]; console.log(o.x, o.y);"
+    ) == ["2,1,3", "1 2"]
+
+
+def test_for_of_over_infinite_generator_with_break():
+    assert out(
+        "function* naturals() { let n = 1; while (true) yield n++; }\n"
+        "const out = [];\n"
+        "for (const x of naturals()) { out.push(x); if (out.length === 5) break; }\n"
+        "console.log(out.join(','));"
+    ) == ["1,2,3,4,5"]
+
+
+def test_string_iterates_by_code_point():
+    assert out(
+        "console.log('a\\u{1F600}b'.length, [...'a\\u{1F600}b'].length);"
+    ) == ["4 3"]
+
+
+def test_generator_method_with_computed_symbol_key():
+    assert out(
+        "class R { constructor(a, b) { this.a = a; this.b = b; } "
+        "*[Symbol.iterator]() { for (let i = this.a; i < this.b; i++) yield i; } }\n"
+        "console.log([...new R(2, 6)].join(','));"
+    ) == ["2,3,4,5"]
+
+
+def test_tagged_template_raw_strings():
+    assert out(
+        r"console.log(String.raw`a\n${1}b`);"
+        "\nfunction t(s, ...v) { return s.raw.join('|'); }\n"
+        r"console.log(t`x\t${0}y`);"
+    ) == ["a\\n1b", "x\\t|y"]
+
+
 def test_thrown_error_reports_line_and_stack():
     from domonic_libs.acorn.interpret import JSThrow
 
@@ -324,7 +545,8 @@ def test_thrown_error_reports_line_and_stack():
     err = ei.value
     assert err.js_line == 2
     assert err.js_trace == "b → a → <script>"
-    assert "at b → a → <script> (line 2)" in err.value["stack"]
+    assert err.value.name == "TypeError"
+    assert "at b → a → <script> (line 2)" in err.value.stack
 
 
 def test_reference_error_in_constructor_has_trace():
@@ -350,3 +572,256 @@ def test_hyperscript_helper_builds_domonic_tree():
         ");"
     )
     assert str(doc.body) == "<body><div><h1>Title</h1><p>body</p></div></body>"
+
+
+def test_object_define_property_getter_on_a_fresh_plain_object():
+    # `getattr(o, "_accessors", None)` never actually falls back to `None`
+    # here -- `JSObject.__getattr__` returns UNDEFINED (never raises) for a
+    # missing key, so the `None` default of plain `getattr` is unreachable
+    # and `.setdefault` crashed on `_Undefined` for every fresh object (this
+    # is what broke loading axios/katex/marked/nunjucks and 4 others).
+    assert out(
+        "const o = {};\n"
+        "Object.defineProperty(o, 'x', { get() { return 42; } });\n"
+        "console.log(o.x);"
+    ) == ["42"]
+
+
+def test_object_assign_onto_a_function():
+    # `Object.assign(target, ...)` assumed `target` is always a real dict
+    # (`target.update(s)`); `Object.assign(someFunction, {...})` is real code
+    # (this exact pattern is how hammerjs/sortablejs/voca attach properties
+    # to a function), and crashed with `'JSFunction' object has no attribute
+    # 'update'`.
+    assert out(
+        "function Foo(){}\n"
+        "Object.assign(Foo, { bar: 42, baz: function(){ return 99; } });\n"
+        "console.log(Foo.bar, Foo.baz());"
+    ) == ["42 99"]
+
+
+def test_stringify_a_native_class_used_as_a_value():
+    # `_stringify`'s callable branch assumed `v` was always a JS function
+    # instance, whose bound `__repr__` takes no extra args; a native class
+    # exposed as a JS global (`ArrayBuffer`, `DataView`, ...) is callable
+    # too, but `getattr(ArrayBuffer, "__repr__")` returns the *unbound*
+    # `object.__repr__`, and calling it with no args crashed with
+    # "missing 1 required positional argument: 'self'" (this is what broke
+    # loading underscore.js, feature-detecting `typeof ArrayBuffer`/
+    # `String(DataView)`).
+    assert out("console.log(String(ArrayBuffer).indexOf('function') === 0)") == ["true"]
+
+
+def test_unbound_native_instance_method_via_class_is_not_a_crash():
+    # `Function.toString.call(fn)` is a common borrowed-method feature
+    # check (this is what broke loading luxon); `Function.toString`
+    # (accessed directly on the class, no instance) used to resolve to the
+    # real, *unbound* `Object.toString` and crash on a bare call with
+    # "missing 1 required positional argument: 'self'". It now resolves
+    # through the generic per-type prototype instead (mirroring real JS,
+    # where every function inherits from `Function.prototype`), so calling
+    # it is safe even though it isn't a literal transcription of the
+    # function's source.
+    assert out(
+        "function f(){}\n"
+        "console.log(typeof Function.toString.call(f));"
+    ) == ["string"]
+
+
+def test_native_staticmethod_still_callable_via_class():
+    # guards the fix above from over-reaching: `Math.sqrt` is a real
+    # `@staticmethod`, and `getattr(Math, 'sqrt')` unwraps to a plain
+    # function -- indistinguishable *by shape* from an unbound instance
+    # method -- so the crash guard must tell them apart by how the class
+    # itself declared the attribute, not just "is it a plain function".
+    # Getting this wrong once made every `Math.*` call inside a class
+    # method return undefined instead of a number.
+    assert out(
+        "class Point {\n"
+        "  constructor(x, y) { this.x = x; this.y = y; }\n"
+        "  dist() { return Math.sqrt(this.x * this.x + this.y * this.y); }\n"
+        "}\n"
+        "console.log(new Point(3, 4).dist());"
+    ) == ["5"]
+
+
+def test_var_inside_a_for_loop_is_function_scoped():
+    # `var` is function-scoped in real JS, not block-scoped: a `var`
+    # declared inside a `for(...)` init (or any `{ }` block) must land in
+    # the nearest enclosing function, not the loop's own throwaway
+    # Environment -- otherwise it vanishes once the loop ends, and a later
+    # reference in the same function resolves to an unrelated *outer*
+    # variable of the same name instead of the one the loop just built.
+    # This is exactly what broke loading luxon: `for(var e=.., t=new
+    # Array(e), n=0; ...) t[n]=...` left the function's own `t` invisible
+    # right after the loop, silently falling back to an outer `t` (a regex,
+    # in luxon's case) and crashing with "undefined is not a function"
+    # -- or worse, running on, but against the wrong value.
+    assert out(
+        "var t = 'outer';\n"
+        "function build(n) {\n"
+        "  for (var i = 0, t = new Array(n), j = 0; j < n; j++) t[j] = j + 1;\n"
+        "  return t;\n"
+        "}\n"
+        "console.log(build(3).join(','), t);"
+    ) == ["1,2,3 outer"]
+
+
+def test_object_is_directly_callable():
+    # `Object` was a plain namespace dict (`Object.keys`, `.assign`, ...) with
+    # no `__call__` of its own; real JS `Object` is *also* a constructor you
+    # can call directly (`Object(value)` -- a common defensive-coercion
+    # idiom used by lodash/handlebars/fuse.js to box a value, or return a
+    # fresh empty object for `null`/`undefined`), and calling it crashed with
+    # "[object Object] is not a function".
+    assert out(
+        "var x = {a: 1};\n"
+        "console.log(Object(x) === x, typeof Object(null), typeof Object.keys);"
+    ) == ["true object function"]
+
+
+def test_string_property_is_enumerable_for_a_valid_index():
+    # `"z".propertyIsEnumerable(0)` -- a classic ES5-shim feature check
+    # (lodash/handlebars use it to decide whether they need an
+    # `Object.keys` polyfill for boxed strings) -- came back `undefined`
+    # since plain strings had no such method, and calling `undefined` as a
+    # function crashed loading handlebars.
+    assert out(
+        "console.log('z'.propertyIsEnumerable(0), 'z'.propertyIsEnumerable(5));"
+    ) == ["true false"]
+
+
+def test_borrowed_method_call_on_a_receiver_without_it_is_a_real_typeerror():
+    # `SomeCtor.prototype.aMethodItDoesntHave` is deliberately permissive
+    # (see `_GenericPrototype`) so a genuinely borrowed method -- `var t =
+    # RegExp.prototype.test; t.call(re, s)` -- still resolves once the real
+    # receiver shows up via `.call`/`.apply`. But when that receiver's own
+    # type truly doesn't have the method either, resolution lands on
+    # `undefined`, and calling *that* used to crash with a raw Python
+    # "'_Undefined' object is not callable" instead of a real JS TypeError
+    # (this is what broke loading handlebars, past its `Object()` fix).
+    from domonic_libs.acorn.interpret import JSThrow
+
+    with pytest.raises(JSThrow) as ei:
+        out("Function.prototype.aMadeUpMethodNumberOneOnly.call(5);")
+    assert "is not a function" in str(ei.value)
+
+
+def test_string_and_number_delegate_to_domonic_javascript():
+    # `String()`/`Number()` used to return a bare Python `str`/coerced number
+    # computed entirely by the interpreter's own `_stringify`/`js_number`.
+    # domonic 1.7 made `domonic.javascript.String`/`Number` real `str`/`float`
+    # *subclasses* (not the disconnected wrapper object they used to be), so
+    # the interpreter now wraps its own (sentinel-aware) coercion in
+    # domonic's real classes instead, matching how `Math`/`Error` were
+    # migrated onto domonic in 1.6.
+    assert out(
+        "console.log(typeof String(5), String(5) === '5', String(5) + '!');\n"
+        "console.log(typeof Number('5'), Number('5') === 5, Number(5) + 1);"
+    ) == ["string true 5!", "number true 6"]
+
+
+def test_json_stringify_a_wrapped_number_has_no_trailing_dot_zero():
+    # `domonic.javascript.Number` is a `float` *subclass*, so even a whole
+    # number stays float-backed at the C level once `String()`/`Number()`
+    # started wrapping their result in it -- Python's stdlib `json` module
+    # (which the interpreter's own `JSON.stringify` uses under the hood)
+    # would otherwise render it with a trailing ".0", and leave `NaN`/
+    # `Infinity` as literal (invalid-JSON) tokens instead of `null`.
+    assert out(
+        "console.log(JSON.stringify({a: Number(5), b: 5.5, c: NaN, d: Infinity}));"
+    ) == ['{"a":5,"b":5.5,"c":null,"d":null}']
+
+
+def test_two_interpreters_dispatch_correctly_side_by_side():
+    # `evaluate`/`execute` used to look up `_ex_<Type>`/`_st_<Type>` via
+    # `getattr(self, ...)`, returning a method already *bound* to that one
+    # `Interpreter` instance; a benchmarking pass replaced that per-call
+    # string-concat-plus-getattr with a single dict lookup keyed by node
+    # type -- but the dict has to store the *unbound* function and take
+    # `self` explicitly at call time, or two separate `Interpreter`
+    # instances running side by side (a real pattern -- `default_globals()`
+    # is called fresh per real-world-sweep library, per REPL session, ...)
+    # would silently share one instance's bound methods.
+    from domonic_libs.acorn.interpret import Interpreter, default_globals
+
+    g1, c1, d1, w1 = default_globals()
+    i1 = Interpreter(g1, global_object=w1)
+    g2, c2, d2, w2 = default_globals()
+    i2 = Interpreter(g2, global_object=w2)
+
+    i1.run("var x = 1;")
+    i2.run("var x = 2;")
+    assert i1.run("x") == 1
+    assert i2.run("x") == 2
+
+
+def test_commonjs_is_opt_in_not_default():
+    # `module`/`exports`/`require` are NOT present unless explicitly asked
+    # for -- a real browser has none of the three either, and *merely their
+    # presence* (never mind whether a script ever calls `require`) flips
+    # which branch a UMD bundle's own environment check takes
+    # (`typeof module !== "undefined" ? module.exports = ... : window.Lib =
+    # ...`), silently losing the global almost every real-world library
+    # (lodash, dayjs, chroma, Mustache, zod, ...) exposes itself as. This
+    # was a real regression caught by re-running the `realworld` sweep after
+    # first making these on by default.
+    assert out(
+        "console.log(typeof module, typeof exports, typeof require);"
+    ) == ["undefined undefined undefined"]
+
+
+def test_commonjs_module_exports_and_require(tmp_path):
+    # a real, big cluster of real-world bundles are plain CommonJS, not
+    # browser UMD -- found via the `domonic_libs.realworld` sweep, where
+    # roughly half of all load failures were exactly `require`/`module`/
+    # `exports is not defined`. ES modules (`import`/`export`) were already
+    # a core interpreter feature, not something bolted onto `myjs`; this
+    # gives CommonJS the same treatment, opt-in via `commonjs=True` (see
+    # `test_commonjs_is_opt_in_not_default` for why it isn't the default).
+    assert out(
+        "console.log(typeof module, typeof exports, typeof require);",
+        commonjs=True,
+    ) == ["object object function"]
+
+    # `exports.x = y` mutates the *same* object `module.exports` starts as
+    # (aliased, not copied) -- but reassigning `module.exports` wholesale
+    # breaks that link, exactly like real Node.
+    assert out("exports.bar = 99; console.log(module.exports.bar);", commonjs=True) == ["99"]
+
+    (tmp_path / "math_util.js").write_text(
+        "exports.double = function(x) { return x * 2; };\n"
+        "module.exports.PI_ISH = 3.14;\n"
+    )
+    path = str(tmp_path / "math_util.js").replace("\\", "\\\\")
+    assert out(
+        f'var m = require("{path}");\n'
+        "console.log(m.double(21), m.PI_ISH);",
+        commonjs=True,
+    ) == ["42 3.14"]
+
+    # a bare specifier resolves to a real Python module, the same
+    # convention `import x from "some_python_module"` already uses.
+    assert out('console.log(typeof require("os").getcwd);', commonjs=True) == ["function"]
+
+    # a genuinely missing module is a clean JS error, not a raw traceback.
+    from domonic_libs.acorn.interpret import JSThrow
+    with pytest.raises(JSThrow) as ei:
+        out('require("/does/not/exist.js");', commonjs=True)
+    assert "cannot find module" in str(ei.value)
+
+
+def test_commonjs_require_caches_and_tolerates_circular_requires(tmp_path):
+    (tmp_path / "a.js").write_text(
+        "module.exports.fromA = 1;\n"
+        "module.exports.b = require('./b.js');\n"
+    )
+    (tmp_path / "b.js").write_text(
+        # `a.js` is still mid-execution (its `module.exports` only has
+        # `fromA` so far) -- a real `require('./a.js')` here would see
+        # that partial object, not crash or infinite-loop.
+        "var a = require('./a.js');\n"
+        "module.exports.sawFromA = a.fromA;\n"
+    )
+    path = str(tmp_path / "a.js").replace("\\", "\\\\")
+    assert out(f'var a = require("{path}"); console.log(a.b.sawFromA);', commonjs=True) == ["1"]

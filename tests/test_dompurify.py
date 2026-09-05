@@ -123,8 +123,12 @@ class TestDOMPurifyApi(unittest.TestCase):
         self.assertEqual(sanitize("<img src=x name=isindex>"), '<img src="x" name="isindex">')
 
     def test_return_dom(self):
+        # a real DOM's `.tagName` is always uppercase for HTML elements
+        # (e.g. `document.createElement('p').tagName === 'P'` in any browser)
+        # -- domonic 1.7 made this spec-correct; the *serialized string* form
+        # (see test_whole_document) is what stays lowercase.
         node = DOMPurify().sanitize("<p onclick='x'>ok</p>", {"RETURN_DOM": True})
-        self.assertEqual(getattr(node, "tagName", ""), "p")
+        self.assertEqual(getattr(node, "tagName", ""), "P")
 
     def test_return_dom_fragment(self):
         frag = DOMPurify().sanitize("<p>x</p><b>y</b>", {"RETURN_DOM_FRAGMENT": True})

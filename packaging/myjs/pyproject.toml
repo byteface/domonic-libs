@@ -39,7 +39,7 @@ classifiers = [
 dependencies = [
     # myjs and domonic-libs are released in lockstep from the repo-root VERSION;
     # `make bump` keeps this floor in step.
-    "domonic-libs>=0.0.2",
+    "domonic-libs>=0.0.3",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +60,9 @@ package-dir = { "" = "src" }
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["myjs*"]
+
+[tool.setuptools.package-data]
+myjs = ["examples/*.js", "examples/*.py", "examples/*.html"]
 
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }

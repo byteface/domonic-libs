@@ -37,13 +37,30 @@ def _read_file(path, encoding="utf-8"):
     return data if encoding in (None, "buffer", "binary") else data.decode(encoding)
 
 
+def _read_bytes(path, n=None, offset=0):
+    """The first ``n`` bytes of a file (or all of it), starting at ``offset``
+    -- for peeking at a header (BMP, PNG, ELF, ...) without reading the whole
+    file. Pair with the ``struct`` global to unpack it."""
+    with open(path, "rb") as fh:
+        if offset:
+            fh.seek(int(offset))
+        return fh.read(int(n) if n is not None else -1)
+
+
 def _write_file(path, data, encoding="utf-8"):
     p = Path(path)
     if isinstance(data, (bytes, bytearray)):
-        p.write_bytes(bytes(data))
+        raw = bytes(data)
+    elif hasattr(data, "buffer") and hasattr(getattr(data, "buffer"), "tobytes"):
+        # a JS Uint8Array/Int16Array/... (domonic.javascript.TypedArray) --
+        # its backing store is a real array.array; write its actual bytes
+        # rather than falling through to str(data) (a Python repr, not data).
+        raw = data.buffer.tobytes()
     else:
         p.write_text(str(data), encoding=encoding)
-    return len(data)
+        return len(data)
+    p.write_bytes(raw)
+    return len(raw)
 
 
 def _append_file(path, data, encoding="utf-8"):
@@ -78,6 +95,7 @@ def _rm(path, opts=None):
 
 FS = {
     "readFileSync": _read_file,
+    "readBytes": _read_bytes,
     "writeFileSync": _write_file,
     "appendFileSync": _append_file,
     "existsSync": lambda p: Path(p).exists(),
@@ -169,6 +187,97 @@ def _open(target, *_):
     subprocess.run([opener, str(target)], check=False, shell=(opener == "start"))
 
 
+def _prompt(text="", default="", *_):
+    """A real OS input dialog (macOS). Returns the typed text, or None on Cancel."""
+    if sys.platform == "darwin":
+        script = (
+            f'set r to display dialog {_json.dumps(str(text))} with title "myjs" '
+            f'default answer {_json.dumps(str(default))}\n'
+            f'return text returned of r'
+        )
+        r = subprocess.run(["osascript", "-e", script], check=False, capture_output=True, text=True)
+        return r.stdout.rstrip("\n") if r.returncode == 0 else None
+    try:
+        return input(f"{text} ") or default
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+def _confirm(text="", *_):
+    """A real OS Yes/OK-Cancel dialog (macOS). Returns a bool."""
+    if sys.platform == "darwin":
+        script = (
+            f'set r to display dialog {_json.dumps(str(text))} with title "myjs" '
+            f'buttons {{"Cancel", "OK"}} default button "OK"\n'
+            f'return button returned of r'
+        )
+        r = subprocess.run(["osascript", "-e", script], check=False, capture_output=True, text=True)
+        return r.returncode == 0 and r.stdout.strip() == "OK"
+    try:
+        return input(f"{text} [y/N] ").strip().lower().startswith("y")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _choose_file(*_):
+    """The native Finder file picker (macOS). Returns a path, or None on Cancel."""
+    if sys.platform == "darwin":
+        r = subprocess.run(["osascript", "-e", "POSIX path of (choose file)"],
+                            check=False, capture_output=True, text=True)
+        return r.stdout.strip() or None
+    return None
+
+
+def _choose_folder(*_):
+    """The native Finder folder picker (macOS). Returns a path, or None on Cancel."""
+    if sys.platform == "darwin":
+        r = subprocess.run(["osascript", "-e", "POSIX path of (choose folder)"],
+                            check=False, capture_output=True, text=True)
+        return r.stdout.strip() or None
+    return None
+
+
+# --- clipboard -- the real system clipboard, shared with every other app ----
+
+def _clipboard_write(text, *_):
+    text = str(text)
+    if sys.platform == "darwin":
+        cmd = ["pbcopy"]
+    elif sys.platform == "win32":
+        cmd = ["clip"]
+    else:
+        cmd = next((c for c in (["xclip", "-selection", "clipboard"],
+                                 ["xsel", "--clipboard", "--input"],
+                                 ["wl-copy"]) if shutil.which(c[0])), None)
+        if cmd is None:
+            return False
+    r = subprocess.run(cmd, input=text, text=True, check=False, shell=(sys.platform == "win32"))
+    # pbcopy (and friends) hand data to the OS pasteboard server asynchronously
+    # and exit before it's actually committed -- a `readText()` called right
+    # after a `writeText()` can otherwise race it and read back a torn value
+    # (most visible as mangled multi-byte characters). A short settle avoids it.
+    _time.sleep(0.2)
+    return r.returncode == 0
+
+
+def _clipboard_read(*_):
+    if sys.platform == "darwin":
+        cmd = ["pbpaste"]
+    elif sys.platform == "win32":
+        cmd = ["powershell", "-noprofile", "-command", "Get-Clipboard"]
+    else:
+        cmd = next((c for c in (["xclip", "-selection", "clipboard", "-o"],
+                                 ["xsel", "--clipboard", "--output"],
+                                 ["wl-paste"]) if shutil.which(c[0])), None)
+        if cmd is None:
+            return None
+    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return r.stdout.rstrip("\r\n") if r.returncode == 0 else None
+
+
+CLIPBOARD = {"readText": _clipboard_read, "writeText": _clipboard_write}
+
+
 # --- http / fetch --------------------------------------------------------
 
 class Response(JSObject):
@@ -181,12 +290,17 @@ class Response(JSObject):
         })
         self._body = body
 
-    @property
-    def text(self):
+    # browser Response methods -- `await r.text()` / `await r.json()`. They are
+    # synchronous here (the body is already in hand); `await` on the non-promise
+    # result is a harmless no-op, so browser code ports unchanged.
+    def text(self, *_):
         return self._body.decode("utf-8", "replace")
 
-    def json(self):
+    def json(self, *_):
         return _to_js(_json.loads(self._body.decode("utf-8", "replace")))
+
+    def bytes(self, *_):
+        return object.__getattribute__(self, "_body")
 
     def bytes(self):
         return self._body
@@ -437,21 +551,69 @@ def _to_js(v):
     return v
 
 
-PY = {
-    "import": importlib.import_module,
-    "eval": lambda expr: eval(expr, {}),  # noqa: S307 - explicit host feature
-    "list": lambda it: JSArray(it),
-    "dict": lambda o: JSObject(dict(o)),
-    "tuple": lambda it: tuple(it),
-    "repr": repr,
-    "str": str,
-    "int": int,
-    "float": float,
-    "len": len,
-    "dir": lambda o: JSArray(dir(o)),
-    "type": lambda o: type(o).__name__,
-    "toJS": _to_js,
-}
+class _Py:
+    """The ``py`` global. Callable -- ``py("expr")`` evaluates a Python
+    expression (falling back to ``exec`` for statements) -- and carries
+    ``py.import`` / ``py.exec`` / ``py.eval`` / ``py.list`` / ``py.dir`` / ...
+
+        py("2 ** 10")                 // 1024
+        py("print('hi')")             // prints, returns undefined
+        const np = py.import("numpy")
+        py.exec("import math\\nx = math.pi")   // -> {x: 3.14159...}
+    """
+
+    _G = {"__builtins__": __builtins__}
+
+    def __call__(self, code="", scope=None, *_):
+        import types
+        code = str(code).strip()
+        has_scope = isinstance(scope, dict)
+        ns = dict(scope) if has_scope else {}
+        try:
+            return _to_js(eval(code, self._G, ns))          # noqa: S307 - explicit feature
+        except SyntaxError:
+            # Statements (imports, defs, classes, multi-line blocks) need a
+            # *single* namespace for globals and locals -- otherwise a `def`
+            # closes over `self._G` while its `import`s landed in a separate
+            # `ns`, and the function can't see its own module's imports the
+            # next time it runs (Python's exec-with-two-dicts "class body"
+            # quirk). With no caller-supplied scope, exec straight against
+            # the shared, persistent `self._G` so later `py(...)` calls can
+            # see what an earlier one defined, like a real module namespace.
+            target = ns if has_scope else self._G
+            before = set(target)
+            exec(code, self._G, target)                      # noqa: S102
+            new_keys = set(target) - before
+            return _to_js({k: target[k] for k in new_keys
+                           if not k.startswith("__") and not isinstance(target[k], types.ModuleType)})
+
+    # `import` is a keyword -- the interpreter reaches `py.import` through the
+    # `<name>_` keyword-alias fallback in js_get.
+    import_ = staticmethod(importlib.import_module)
+    exec = __call__
+
+    @staticmethod
+    def eval(expr="", scope=None, *_):
+        ns = dict(scope) if isinstance(scope, dict) else {}
+        return _to_js(eval(str(expr), _Py._G, ns))           # noqa: S307
+
+    list = staticmethod(lambda it, *_: JSArray(it))
+    dict = staticmethod(lambda o, *_: JSObject(dict(o)))
+    tuple = staticmethod(lambda it, *_: tuple(it))
+    repr = staticmethod(lambda o, *_: repr(o))
+    str = staticmethod(lambda o="", *_: str(o))
+    int = staticmethod(lambda o=0, *_: int(o))
+    float = staticmethod(lambda o=0.0, *_: float(o))
+    len = staticmethod(lambda o, *_: len(o))
+    dir = staticmethod(lambda o, *_: JSArray(dir(o)))
+    type = staticmethod(lambda o, *_: type(o).__name__)
+    getattr = staticmethod(lambda o, n, *d: getattr(o, n, *d))
+    setattr = staticmethod(lambda o, n, v, *_: setattr(o, n, v))
+    toJS = staticmethod(_to_js)
+    globals = staticmethod(lambda *_: JSObject(dict(_Py._G)))
+
+
+PY = _Py()
 
 
 # --- os (Node-flavoured) -------------------------------------------------
@@ -552,10 +714,16 @@ def scope(myjs_version="0.0.1"):
         "say": _say,
         "notify": _notify,
         "alert": _alert,
+        "prompt": _prompt,
+        "confirm": _confirm,
+        "chooseFile": _choose_file,
+        "chooseFolder": _choose_folder,
+        "clipboard": dict(CLIPBOARD),
         "open": _open,
         "fetchSync": _request,   # `fetch` (async) is installed per-session by the engine
         "process": _process(myjs_version),
-        "py": dict(PY),
+        "py": PY,
+        "struct": importlib.import_module("struct"),  # binary headers -- pack/unpack/calcsize/unpack_from
         "require": require,
         "atob": lambda s: _base64.b64decode(s).decode("utf-8", "replace"),
         "btoa": lambda s: _base64.b64encode(str(s).encode("utf-8")).decode("ascii"),

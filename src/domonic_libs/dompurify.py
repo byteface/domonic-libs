@@ -1430,7 +1430,13 @@ class DOMPurify:
             return "".join(self._serialize_node(c) for c in self._child_nodes(node))
         if node_type != NODE_TYPE["element"] and (not name or name.startswith("#")):
             return ""
-        out = ["<", name]
+        # HTML elements' `tagName` is uppercase (spec-correct -- domonic 1.7),
+        # but HTML *serialization* always prints tags lowercase regardless;
+        # SVG/MathML tags keep their real mixed case (e.g. `linearGradient`),
+        # so only fold the case for elements actually in the HTML namespace.
+        namespace = getattr(node, "namespaceURI", None)
+        tag_name = name.lower() if namespace in (None, "http://www.w3.org/1999/xhtml") else name
+        out = ["<", tag_name]
         for attr_name, attr_value in self._serialize_attributes(node):
             out.append(' ' + attr_name + '="' + _escape_attr(attr_value) + '"')
         out.append(">")
@@ -1438,7 +1444,7 @@ class DOMPurify:
             return "".join(out)
         for child in self._child_nodes(node):
             out.append(self._serialize_node(child))
-        out.append("</" + name + ">")
+        out.append("</" + tag_name + ">")
         return "".join(out)
 
     def _serialize_attributes(self, node):

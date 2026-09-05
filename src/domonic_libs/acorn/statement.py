@@ -263,7 +263,7 @@ class StatementMixin:
         i = 0
         while i < len(self.labels):
             lab = self.labels[i]
-            if node.label is None or lab["name"] == node.label.name:
+            if node.label is None or lab.get("name") == node.label.name:
                 if lab.get("kind") is not None and (isBreak or lab["kind"] == "loop"):
                     break
                 if node.label and isBreak:
@@ -489,7 +489,11 @@ class StatementMixin:
 
     def parseLabeledStatement(self, node, maybeName, expr, context):
         for label in self.labels:
-            if label["name"] == maybeName:
+            # an unlabeled loop pushes a nameless sentinel (`_loopLabel`, just
+            # `{"kind": "loop"}`, to track break/continue validity) -- a real
+            # label always has a name, so `.get` (not `[...]`) is what makes
+            # a labeled statement *inside* a plain loop not crash the parser.
+            if label.get("name") == maybeName:
                 self.raise_(expr.start, "Label '" + maybeName + "' is already declared")
         kind = "loop" if self.type.isLoop else ("switch" if self.type is tt._switch else None)
         for i in range(len(self.labels) - 1, -1, -1):

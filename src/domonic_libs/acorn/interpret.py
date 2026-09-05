@@ -23,8 +23,11 @@ the Python tree.
 from __future__ import annotations
 
 import collections
+import functools
 import heapq
 import importlib
+import inspect
+import keyword
 import math
 import os
 import queue
@@ -387,14 +390,26 @@ def _intern(obj, name):
 
 
 class Environment:
-    __slots__ = ("vars", "parent", "this", "glob", "consts")
+    __slots__ = ("vars", "parent", "this", "glob", "consts", "is_call_scope")
 
-    def __init__(self, parent=None, this=UNDEFINED):
+    def __init__(self, parent=None, this=UNDEFINED, is_call_scope=False):
         self.vars = {}
         self.parent = parent
         self.this = this if this is not UNDEFINED or parent is None else parent.this
         self.glob = None  # only the root env carries the global object
         self.consts = None  # set of names declared `const` in this scope
+        # a function call (or the global/module top level) -- where `var`
+        # actually lands. Every OTHER Environment (a `{ }` block, a loop's
+        # own per-iteration scope, a `catch` clause, ...) is block-scoped
+        # only for `let`/`const`; `var` walks up past all of those to here,
+        # matching real JS (`var` is function-scoped, not block-scoped).
+        self.is_call_scope = is_call_scope or parent is None
+
+    def var_scope(self):
+        env = self
+        while not env.is_call_scope and env.parent is not None:
+            env = env.parent
+        return env
 
     def declare(self, name, value, const=False):
         self.vars[name] = value
@@ -445,6 +460,24 @@ def js_get_safe(obj, key):
         return UNDEFINED
 
 
+@functools.lru_cache(maxsize=None)
+def _is_staticmethod(cls, key):
+    """Whether ``cls`` (or a base of it) declares ``key`` as a real
+    ``@staticmethod``/``@classmethod`` -- ``getattr(cls, key)`` unwraps both
+    of those to a directly-callable function, indistinguishable by shape from
+    an ordinary unbound instance method (which needs a receiver), so this
+    walks the MRO's own ``__dict__``s, the one place the distinction still
+    shows. Cached: ``(cls, key)`` is a small, fixed, whole-program-lifetime
+    set (real Python classes, not user data) walked on every native
+    class/callable property miss -- e.g. every single `Math.sqrt` lookup in
+    a hot loop -- found via a benchmarking pass, not a correctness bug."""
+    for base in cls.__mro__:
+        raw = base.__dict__.get(key)
+        if raw is not None:
+            return isinstance(raw, (staticmethod, classmethod))
+    return False
+
+
 class JSFunction:
     def __init__(self, node, closure, interp, is_arrow=False, name=None):
         self.node = node
@@ -462,7 +495,7 @@ class JSFunction:
         return self._call_sync(args, _this)
 
     def _call_sync(self, args, _this):
-        env = Environment(self.closure, this=(self.closure.this if self.is_arrow else _this))
+        env = Environment(self.closure, this=(self.closure.this if self.is_arrow else _this), is_call_scope=True)
         params = self.node.params
         env.declare("arguments", JSArray(args))
         self.interp._bind_params(params, list(args), env)
@@ -518,7 +551,7 @@ class JSGenerator:
 
         def run():
             self._resume.get()  # wait for the first next()
-            env = Environment(fn.closure, this=(fn.closure.this if fn.is_arrow else this))
+            env = Environment(fn.closure, this=(fn.closure.this if fn.is_arrow else this), is_call_scope=True)
             env.declare("arguments", JSArray(args))
             self.interp._bind_params(fn.node.params, list(args), env)
             try:
@@ -643,7 +676,7 @@ class JSClass:
 
     def method(self, name):
         cls = self
-        while cls is not None:
+        while isinstance(cls, JSClass):
             if name in cls.methods:
                 return cls.methods[name]
             cls = cls.superclass
@@ -651,7 +684,7 @@ class JSClass:
 
     def accessor(self, name):
         cls = self
-        while cls is not None:
+        while isinstance(cls, JSClass):
             if name in cls.accessors:
                 return cls.accessors[name]
             cls = cls.superclass
@@ -767,7 +800,16 @@ def _stringify(v):
                 pass
         return "[object Object]"
     if callable(v):
-        return getattr(v, "__repr__", lambda: "function")()
+        if isinstance(v, JSFunction):
+            return repr(v)
+        # a native (Python/domonic) function or class exposed as a JS global,
+        # e.g. `String(ArrayBuffer)` -- `v.__repr__` is an *unbound* method on
+        # a class (it needs `self`), so calling it directly crashes; build the
+        # native-function string real JS would produce instead.
+        name = getattr(v, "__name__", None) or getattr(v, "name", None) or ""
+        if not isinstance(name, str):
+            name = ""
+        return f"function {name}() {{ [native code] }}"
     return str(v)
 
 
@@ -847,7 +889,12 @@ def js_typeof(v):
     if isinstance(v, (int, float)):
         return "number"
     if isinstance(v, str):
-        return "string"
+        # symbols are opaque strings under the hood (see _symbol_ctor) --
+        # real, "just barely" symbols, not real unique primitives. Without
+        # this they self-report as "string" and every `typeof x === "symbol"`
+        # feature-detection idiom (extremely common in real-world libraries)
+        # silently takes the wrong branch.
+        return "symbol" if v.startswith("@@") else "string"
     if callable(v) or isinstance(v, (JSFunction, JSClass)):
         return "function"
     return "object"
@@ -861,12 +908,18 @@ def _to_key(v):
     return _stringify(v)
 
 
+_ERR_NS = None
+
+
 def _make_error(name, message):
-    e = JSObject()
-    e["name"] = name
-    e["message"] = message
-    e["stack"] = f"{name}: {message}"
-    return e
+    """A JS error -- a real ``domonic.javascript`` error instance (1.6 ships the
+    whole family with `.name` / `.message` / `.stack` and working `instanceof`)."""
+    global _ERR_NS
+    if _ERR_NS is None:
+        import domonic.javascript as _j
+        _ERR_NS = _j
+    cls = getattr(_ERR_NS, name, _ERR_NS.Error)
+    return cls(_stringify(message))
 
 
 # -- member get / set on any runtime value ----------------------------
@@ -913,6 +966,9 @@ def js_get(obj, key):
             return obj[i] if 0 <= i < len(obj) else UNDEFINED
         except (ValueError, TypeError):
             pass
+        extra = _intern(obj, key)   # e.g. a tagged template's `strings.raw`
+        if extra is not None:
+            return extra
         # a domonic list-like (DOMTokenList, NodeList, HTMLCollection, ...) --
         # its own methods win over the generic Array delegation
         if type(obj) not in (list, JSArray):
@@ -953,6 +1009,13 @@ def js_get(obj, key):
             got = getattr(obj, key, UNDEFINED)
             if got is not UNDEFINED:
                 return got
+        # classic ES5 prototypal inheritance -- `new SomeFunction()` links the
+        # instance to `SomeFunction.prototype` (see _ex_NewExpression), so a
+        # method assigned via `Foo.prototype.bar = ...` (or a whole prototype
+        # object swapped in) is visible on every instance, walking the chain.
+        proto = _intern(obj, "_proto_")
+        if isinstance(proto, dict) and proto is not obj:
+            return js_get(proto, key)
         return _plain_object_method(obj, key)
     if isinstance(obj, (int, float, bool)):
         return _number_method(obj, key)
@@ -965,10 +1028,53 @@ def js_get(obj, key):
         fm = _fn_method(obj, key)
         if fm is not UNDEFINED:
             return fm
+    if key.isdigit() and hasattr(obj, "__getitem__"):
+        # a domonic TypedArray (Uint8Array, ...) or other array-like Python
+        # object with real __getitem__ -- read through it, not getattr, or
+        # `u[0]` would resolve to an attribute literally named "0" (always
+        # UNDEFINED) instead of the buffer's actual element.
+        try:
+            return obj[int(key)]
+        except (IndexError, KeyError, TypeError):
+            pass
     # domonic element / JSFunction / arbitrary python object
     got = getattr(obj, key, UNDEFINED)
-    if got is UNDEFINED and __import__("keyword").iskeyword(key):
+    if inspect.isfunction(got) and isinstance(obj, type) and not _is_staticmethod(obj, key):
+        # an *unbound* Python instance method, retrieved off a class exposed
+        # as a JS global itself (e.g. `Function.toString()` -- a common
+        # borrowed-method feature-detection pattern where `Function` is
+        # called on directly, with no instance). Calling it with no receiver
+        # would crash with a raw Python "missing 1 required positional
+        # argument: 'self'"; treat it as absent instead of leaking that. A
+        # real `@staticmethod` (`Math.sqrt`, ...) needs no receiver at all --
+        # `getattr` unwraps it to the same plain-function shape, so it must
+        # be told apart by how the class itself actually declared it.
+        got = UNDEFINED
+    if got is UNDEFINED and keyword.iskeyword(key):
         got = getattr(obj, key + "_", UNDEFINED)   # domonic uses from_/with_/... for keywords
+    if got is UNDEFINED and (callable(obj) or isinstance(obj, type)):
+        if key == "prototype":
+            return _generic_prototype_for(obj)
+        # every function/class is itself an *object* that inherits the
+        # handful of standard `Object.prototype` names (`toString`,
+        # `hasOwnProperty`, ...) via `Function.prototype`, so a constructor
+        # that doesn't define its own resolves there instead of coming back
+        # undefined -- real code leans on exactly this (`Function.toString
+        # .call(x)` is how `luxon` checks whether `x` is native, no
+        # `.prototype` in sight). This is deliberately NOT the same as the
+        # `.prototype`-touching borrowed-method path above: `_GenericPrototype
+        # .__contains__` always answers True (so a `.call`/`.apply` on a
+        # method borrowed off `.prototype` can defer to the real receiver's
+        # own type later), so checking membership through it here would
+        # wrongly turn *every* genuinely-missing property on *any*
+        # function/class -- `SomeCtor.aTypoedStaticMethod`, `ze.accessor`
+        # when `ze` really never got one -- into a callable stand-in instead
+        # of the `undefined` real JS would give it. Only the actual fixed
+        # Object.prototype names are safe to hand out this way.
+        if key in _OBJECT_PROTO_OWN_NAMES:
+            return _generic_prototype_for(obj)[key]
+    if got is None and key in _STRINGY_DOM_ATTRS:
+        return ""   # DOMString attributes are "" when unset, never null
     return got
 
 
@@ -997,9 +1103,50 @@ def _fn_method(fn, key):
     return UNDEFINED
 
 
+def _accepts_this(fn):
+    """Whether a native (Python-backed) callable declares a ``_this``
+    keyword -- checked via its real signature, never by calling it, so a
+    function with side effects is never invoked twice to find out. Cached
+    by identity where possible: ``inspect.signature`` is one of the slower
+    stdlib introspection calls, and re-deriving it on every single
+    ``.call``/``.apply`` invocation of the *same* underlying function --
+    the common case, e.g. a borrowed method captured once and called in a
+    loop -- showed up as ~16% of total time in a benchmarking pass on
+    exactly that pattern."""
+    try:
+        return _accepts_this_cached(fn)
+    except TypeError:
+        return _accepts_this_uncached(fn)   # fn isn't hashable -- rare, skip the cache
+
+
+@functools.lru_cache(maxsize=2048)
+def _accepts_this_cached(fn):
+    return _accepts_this_uncached(fn)
+
+
+def _accepts_this_uncached(fn):
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "_this" or p.kind == p.VAR_KEYWORD for p in params)
+
+
 def _invoke_any(fn, args, this):
     if isinstance(fn, JSFunction):
         return fn.__call__(*args, _this=this)
+    if not callable(fn):
+        # e.g. `SomeCtor.prototype.aMethodThatDoesntExistOnThis.call(x)` --
+        # a borrowed method deferred until `.call`/`.apply` supplies the real
+        # receiver (see `_GenericPrototype`) can resolve to genuinely
+        # nothing once `x`'s own type is known; that's a real JS
+        # "is not a function", not a raw Python crash.
+        raise JSThrow(_make_error("TypeError", f"{_stringify(fn)} is not a function"))
+    if this is not UNDEFINED and _accepts_this(fn):
+        # a native function that cares about its receiver, e.g.
+        # Object.prototype.toString.call(x) -- everything else is called
+        # exactly as before.
+        return fn(*args, _this=this)
     return fn(*args)
 
 
@@ -1036,6 +1183,16 @@ def _plain_object_method(obj, key):
 
 def js_set(obj, key, value):
     key = _to_key(key)
+    if isinstance(obj, JSClass):
+        # a static property attached *after* the class declaration --
+        # `SomeClass.create = (params) => ...` outside the class body, a
+        # real, common pattern (this is exactly how zod attaches its type
+        # factories: `ZodString.create = (params) => new ZodString(...)`).
+        # `js_get`'s JSClass branch only ever consults `.statics`/`.methods`,
+        # so the write has to land there too, not as a generic Python
+        # attribute nothing will ever look at again.
+        obj.statics[key] = value
+        return value
     if isinstance(obj, JSInstance):
         acc = obj._cls.accessor(key)
         if acc is not None and acc.set is not None:
@@ -1072,11 +1229,32 @@ def js_set(obj, key, value):
             return value
         except (ValueError, TypeError):
             pass
+    if key in _STRINGY_DOM_ATTRS and not isinstance(value, str):
+        value = _stringify(value)   # JS coerces these to string on assignment
+    if key.isdigit() and hasattr(obj, "__setitem__"):
+        # a domonic TypedArray or other array-like -- write through __setitem__,
+        # or `u[0] = 66` would silently create an attribute named "0" instead
+        # of touching the real buffer (see the matching read in js_get).
+        try:
+            obj[int(key)] = value
+            return value
+        except (IndexError, KeyError, TypeError):
+            pass
     try:
         setattr(obj, key, value)
     except Exception:
         pass
     return value
+
+
+# IDL `attribute DOMString ...` -- assignment coerces to string in JS, and
+# domonic corrupts the descriptor if handed a non-string.
+_STRINGY_DOM_ATTRS = frozenset({
+    "textContent", "innerHTML", "outerHTML", "innerText", "nodeValue", "value",
+    "className", "id", "title", "alt", "href", "src", "name", "lang", "dir",
+    "placeholder", "type", "rel", "target", "content", "action", "method",
+    "htmlFor", "accessKey", "tabIndex", "role",
+})
 
 
 _JS_TYPES = {}
@@ -1087,6 +1265,17 @@ def _js_type(name):
         import domonic.javascript as _j
         _JS_TYPES[name] = getattr(_j, name)
     return _JS_TYPES[name]
+
+
+def _tuplefix(v):
+    """A Python ``tuple`` from a native call is a JS array (``Map.entries()``,
+    ``URLSearchParams`` iteration, ...). Convert, and dig one level into a list
+    that holds tuples."""
+    if isinstance(v, tuple):
+        return JSArray(_tuplefix(x) for x in v)
+    if type(v) is list and any(type(x) is tuple for x in v):
+        return JSArray(_tuplefix(x) for x in v)
+    return v
 
 
 def _unwrap_js(v):
@@ -1151,7 +1340,10 @@ def _array_method(arr, key):
         "some": lambda fn, *_: any(js_truthy(_call(fn, x, i, arr)) for i, x in enumerate(arr)),
         "every": lambda fn, *_: all(js_truthy(_call(fn, x, i, arr)) for i, x in enumerate(arr)),
         "reduce": lambda fn, *init: functools.reduce(lambda acc, ix: _call(fn, acc, ix[1], ix[0], arr), enumerate(arr), init[0]) if init else functools.reduce(lambda acc, x: _call(fn, acc, x), arr),
-        "sort": lambda *fn: (arr.sort(key=functools.cmp_to_key(lambda a, b: int(js_number(_call(fn[0], a, b))))) if fn else arr.sort(key=_stringify), arr)[1],
+        # NOT int(...) here -- truncating the comparator's result toward zero
+        # collapses any two elements less than 1 apart (e.g. 187.8 vs 188.0)
+        # to "equal", silently leaving them in their original order.
+        "sort": lambda *fn: (arr.sort(key=functools.cmp_to_key(lambda a, b: js_number(_call(fn[0], a, b)))) if fn else arr.sort(key=_stringify), arr)[1],
         "splice": lambda start=0, dc=UNDEFINED, *items: _splice(arr, start, dc, items),
         "fill": lambda v=UNDEFINED, s=UNDEFINED, e=UNDEFINED, *_: _fill(arr, v, s, e),
     }
@@ -1204,6 +1396,13 @@ def _str_method(s, key):
         "at": lambda i=0: (s[int(i)] if -len(s) <= int(i) < len(s) else UNDEFINED),
         "toString": lambda: s,
         "valueOf": lambda: s,
+        # a boxed string (`Object("z")`, per real JS) has its own indices as
+        # real, enumerable own properties -- `"z".propertyIsEnumerable(0)`
+        # (a classic ES5-shim feature check, e.g. lodash/handlebars testing
+        # whether they need an `Object.keys` polyfill) reads that straight
+        # off the primitive rather than needing a real wrapper object.
+        "propertyIsEnumerable": lambda i=0, *_: isinstance(i, (int, float)) and 0 <= int(i) < len(s),
+        "hasOwnProperty": lambda k="", *_: k == "length" or (str(k).lstrip("-").isdigit() and 0 <= int(k) < len(s)),
     }
     # `replace` / `split` / `match` / `matchAll` / `search` accept a RegExp;
     # `normalize` / `localeCompare` the interpreter never had -- domonic does
@@ -1299,11 +1498,6 @@ def _js_in(a, b):
 def _js_instanceof(a, b):
     if isinstance(a, JSInstance):
         return _is_instance(a, b)
-    # Error objects are plain dicts tagged with a `name`; match against the
-    # built-in error constructors (and their `Error` base).
-    err_name = getattr(b, "__err_name__", None)
-    if err_name is not None and isinstance(a, dict) and "name" in a:
-        return a["name"] == err_name or err_name == "Error"
     bname = getattr(b, "__name__", None) or getattr(b, "name", None)
     if bname == "Array":
         return isinstance(a, (list, JSArray))
@@ -1355,10 +1549,31 @@ def _uint32(v):
     return int(n) & 0xFFFFFFFF
 
 
+# AST node type -> the *unbound* `Interpreter._ex_*` / `_st_*` method that
+# handles it, populated once right after the class body below. `evaluate` /
+# `execute` used to do `getattr(self, "_ex_" + node.type, None)` -- a string
+# concatenation plus a full attribute lookup through the MRO, on literally
+# every single node evaluated -- found via a benchmarking pass (the single
+# most-called function in the whole interpreter). A plain dict keyed by the
+# node-type string, populated once, is a dict lookup instead; storing the
+# *unbound* function (not a bound method) keeps this correct across however
+# many separate `Interpreter` instances exist in the same process, since a
+# bound method captures one specific instance and can't be shared.
+_EX_DISPATCH: dict = {}
+_ST_DISPATCH: dict = {}
+
+
 class Interpreter:
-    def __init__(self, globals_=None, global_object=None):
+    def __init__(self, globals_=None, global_object=None, commonjs=False):
         self.global_env = Environment()
-        self.global_env.this = UNDEFINED
+        # sloppy-mode `this` -- top-level code, and any plain (non-arrow, no
+        # explicit receiver) function call, resolves `this` to the global
+        # object, not undefined. Environment.__init__ already makes a new
+        # scope inherit its parent's `this` whenever it isn't given one
+        # explicitly (that's what makes an arrow function's lexical `this`
+        # work), so setting it once here on the root env is enough to fix it
+        # everywhere a bare call bottoms out at global scope.
+        self.global_env.this = global_object if global_object is not None else UNDEFINED
         self.global_env.glob = global_object
         self.loop = EventLoop()
         for k, v in (globals_ or {}).items():
@@ -1367,10 +1582,13 @@ class Interpreter:
         self.frames = ["<script>"]  # call stack of function names
         self._pending_label = None  # label a following loop should adopt
         self._current_gen = None    # the generator whose body is executing (yield target)
-        self.modules = {}         # resolved path -> {"exports": JSObject, "dir": str}
+        self.modules = {}         # resolved path -> {"exports": JSObject, "dir": str} (ES `import`)
+        self.cjs_modules = {}     # resolved path/spec -> {"exports": ...} (CommonJS `require`)
         self.module_base = os.getcwd()
         self._cur_module = {"exports": JSObject(), "dir": self.module_base}
         self._install_async_globals(global_object)
+        if commonjs:
+            self._install_commonjs_globals()
 
     def _install_async_globals(self, window):
         loop = self.loop
@@ -1420,10 +1638,18 @@ class Interpreter:
         frames = " → ".join(reversed(self.frames))
         err.js_line = line
         err.js_trace = frames
-        if isinstance(err, JSThrow) and isinstance(err.value, dict) and line:
-            err.value.setdefault("line", line)
-            base = err.value.get("stack", err.value.get("message", ""))
-            err.value["stack"] = f"{base}\n  at {frames} (line {line})"
+        if isinstance(err, JSThrow) and line:
+            v = err.value
+            if isinstance(v, dict):
+                v.setdefault("line", line)
+                base = v.get("stack", v.get("message", ""))
+                v["stack"] = f"{base}\n  at {frames} (line {line})"
+            elif hasattr(v, "stack"):   # a domonic error instance
+                try:
+                    v.line = line
+                    v.stack = f"{v.stack}\n  at {frames} (line {line})"
+                except Exception:
+                    pass
         suffix = f" (line {line})" if line else ""
         if not str(err).endswith(suffix) and suffix:
             err.args = (str(err) + suffix,)
@@ -1444,11 +1670,10 @@ class Interpreter:
         loc = getattr(node, "loc", None)
         if loc is not None:
             self.cur_loc = loc
-        t = node.type
-        m = getattr(self, "_st_" + t, None)
+        m = _ST_DISPATCH.get(node.type)
         if m is None:
-            raise JSSyntaxError(f"unsupported statement: {t}")
-        return m(node, env)
+            raise JSSyntaxError(f"unsupported statement: {node.type}")
+        return m(self, node, env)
 
     def _st_ExpressionStatement(self, n, env):
         return self.evaluate(n.expression, env)
@@ -1488,7 +1713,7 @@ class Interpreter:
         exports = JSObject()
         entry = {"exports": exports, "dir": os.path.dirname(key)}
         self.modules[key] = entry  # register before executing (cycle tolerance)
-        mod_env = Environment(self.global_env)
+        mod_env = Environment(self.global_env, is_call_scope=True)
         mod_env.this = UNDEFINED
         prev = self._cur_module
         self._cur_module = entry
@@ -1499,6 +1724,80 @@ class Interpreter:
         finally:
             self._cur_module = prev
         return exports
+
+    # -- CommonJS (`require` / `module.exports`) ---------------------------
+    #
+    # A real, big cluster of real-world bundles are plain CommonJS, not
+    # browser UMD -- found via the `domonic_libs.realworld` sweep: roughly
+    # half of its load failures are exactly `require`/`module`/`exports is
+    # not defined`. But `commonjs=True` is opt-in, NOT the default, for a
+    # real reason found the hard way: almost every UMD bundle (lodash,
+    # dayjs, chroma, Fuse, Mustache, katex, zod, ...) picks its own export
+    # style with `typeof exports === 'object' && typeof module !== "undefined"
+    # ? module.exports = factory() : ... : global.TheLib = factory()` --
+    # *merely the presence* of `module`/`exports` (never mind whether
+    # anything ever calls `require`) makes that check true and sends a UMD
+    # bundle down the Node branch, attaching to `module.exports` instead of
+    # a global the rest of the page (and every curated smoke test) expects
+    # to find. Turning this on by default regressed dozens of libraries
+    # that already loaded fine to fix ~15 that don't -- a bad trade, since
+    # a real browser has no `module`/`exports`/`require` either, and this
+    # interpreter is a browser stand-in first. `myjs`'s own `require` (with
+    # `fs`/`path`/`http`/... built-ins) is unaffected either way -- it was
+    # always present and never included `module`/`exports`.
+
+    def _install_commonjs_globals(self):
+        module_obj = JSObject({"exports": JSObject()})
+        self.global_env.declare("module", module_obj)
+        self.global_env.declare("exports", module_obj["exports"])
+        self.global_env.declare("require", self._make_require(self.module_base))
+
+    def _make_require(self, base_dir):
+        def require(spec=UNDEFINED, *_):
+            if not isinstance(spec, str):
+                raise JSThrow(_make_error("TypeError", f"The \"id\" argument must be of type string"))
+            return self._require(spec, base_dir)
+        return require
+
+    def _require(self, spec, base_dir):
+        key = self._resolve_module(spec, base_dir)
+        if key in self.cjs_modules:
+            return self.cjs_modules[key]["exports"]
+
+        if not key.startswith((".", "/")) and not os.path.isabs(key):
+            # bare specifier -- a real Python module, the same convention
+            # `import x from "some_python_module"` already uses.
+            name = key[5:] if key.startswith("node:") else key   # `require("node:fs")`
+            try:
+                pymod = importlib.import_module(name)
+            except ImportError as ex:
+                raise JSThrow(_make_error("Error", f"Cannot find module {spec!r}: {ex}"))
+            exports = JSObject({n: getattr(pymod, n) for n in dir(pymod) if not n.startswith("_")})
+            exports["default"] = pymod
+            entry = {"exports": exports}
+            self.cjs_modules[key] = entry
+            return exports
+
+        with open(key, encoding="utf-8") as fh:
+            src = fh.read()
+        mod_dir = os.path.dirname(key)
+        module_obj = JSObject({"exports": JSObject()})
+        self.cjs_modules[key] = module_obj   # register before executing -- circular-require tolerance
+        env = Environment(self.global_env, is_call_scope=True)
+        env.this = UNDEFINED
+        env.declare("module", module_obj)
+        env.declare("exports", module_obj["exports"])
+        env.declare("require", self._make_require(mod_dir))
+        env.declare("__filename", key)
+        env.declare("__dirname", mod_dir)
+        # a CJS file has no `import`/`export` syntax of its own -- parsed as
+        # a plain script, not a module, so a top-level `return` some bundles
+        # rely on (technically illegal outside a function, tolerated by
+        # real Node) isn't attempted here either.
+        tree = Parser({"ecmaVersion": 2022, "locations": True,
+                       "allowAwaitOutsideFunction": True}, src).parse()
+        self._exec_block(tree.body, env, hoist=True)
+        return module_obj["exports"]
 
     def _st_ImportDeclaration(self, n, env):
         exports = self._load_module(n.source.value, self._cur_module["dir"])
@@ -1575,14 +1874,23 @@ class Interpreter:
 
     def _st_VariableDeclaration(self, n, env):
         is_const = n.kind == "const"
+        # `var` is function-scoped: a `var` inside a `{ }` block, a loop body,
+        # a `for(var i=0; ...)` init, ... lands in the nearest enclosing
+        # function (or the global/module top level), not the block's own
+        # throwaway Environment -- otherwise it vanishes with that block and
+        # a later reference resolves to an unrelated outer variable of the
+        # same name instead (this is exactly what broke loading `luxon`:
+        # `for(var e=..., t=new Array(e), n=0; ...)` left the function's own
+        # `t` invisible outside the loop). `let`/`const` stay block-scoped.
+        declare_env = env.var_scope() if n.kind == "var" else env
         for d in n.declarations:
             value = self.evaluate(d.init, env) if getattr(d, "init", None) else UNDEFINED
-            self._bind_pattern(d.id, value, env, declare=True)
+            self._bind_pattern(d.id, value, declare_env, declare=True)
             if is_const:
                 for nm in self._pattern_names(d.id):
-                    if env.consts is None:
-                        env.consts = set()
-                    env.consts.add(nm)
+                    if declare_env.consts is None:
+                        declare_env.consts = set()
+                    declare_env.consts.add(nm)
         return UNDEFINED
 
     def _st_FunctionDeclaration(self, n, env):
@@ -1677,11 +1985,43 @@ class Interpreter:
                 break
         return UNDEFINED
 
+    def _iter_lazy(self, it):
+        """Lazily yield what ``for..of`` can consume -- arrays, strings,
+        generators (kept lazy so ``for (x of infiniteGen) { ...; break; }``
+        works), Map/Set, other Python iterables, and objects with a
+        ``[Symbol.iterator]`` method (the ``@@iterator`` key)."""
+        if isinstance(it, str):
+            yield from it   # JS iterates a string by code point, not code unit
+            return
+        if isinstance(it, (list, JSArray, tuple)):
+            yield from list(it)
+            return
+        if isinstance(it, JSGenerator):
+            yield from it
+            return
+        if type(it).__name__ == "Map":   # JS `[...map]` yields [k, v] pairs
+            for pair in it.entries():
+                yield JSArray(pair)
+            return
+        it_fn = js_get(it, "@@iterator") if isinstance(it, (dict, JSInstance)) else UNDEFINED
+        if it_fn is not UNDEFINED and (callable(it_fn) or isinstance(it_fn, JSFunction)):
+            iterator = _invoke_any(it_fn, [], it)
+            nxt = js_get(iterator, "next")
+            while True:
+                r = _invoke_any(nxt, [], iterator)
+                if js_truthy(js_get(r, "done")):
+                    return
+                yield js_get(r, "value")
+        elif hasattr(it, "__iter__"):
+            yield from it
+
+    def _iter_values(self, it):
+        return list(self._iter_lazy(it))
+
     def _st_ForOfStatement(self, n, env):
         label = self._take_label()
         it = self.evaluate(n.right, env)
-        seq = it if isinstance(it, (list, JSArray, str)) else (list(it) if hasattr(it, "__iter__") else [])
-        for item in list(seq):
+        for item in self._iter_lazy(it):
             scope = Environment(env)
             self._for_target(n.left, item, scope)
             try:
@@ -1724,7 +2064,8 @@ class Interpreter:
 
     def _for_target(self, left, value, env):
         if left.type == "VariableDeclaration":
-            self._bind_pattern(left.declarations[0].id, value, env, declare=True)
+            declare_env = env.var_scope() if left.kind == "var" else env
+            self._bind_pattern(left.declarations[0].id, value, declare_env, declare=True)
         else:
             self._assign_target(left, value, env)
 
@@ -1801,11 +2142,10 @@ class Interpreter:
         loc = getattr(node, "loc", None)
         if loc is not None:
             self.cur_loc = loc
-        t = node.type
-        m = getattr(self, "_ex_" + t, None)
+        m = _EX_DISPATCH.get(node.type)
         if m is None:
-            raise JSSyntaxError(f"unsupported expression: {t}")
-        return m(node, env)
+            raise JSSyntaxError(f"unsupported expression: {node.type}")
+        return m(self, node, env)
 
     def _ex_Literal(self, n, env):
         v = n.value
@@ -1830,10 +2170,11 @@ class Interpreter:
 
     def _ex_TaggedTemplateExpression(self, n, env):
         fn = self.evaluate(n.tag, env)
-        strings = JSArray(q.value["cooked"] for q in n.quasi.quasis)
-        strings_obj = strings
+        strings = JSArray(q.value["cooked"] if q.value["cooked"] is not None else q.value["raw"]
+                          for q in n.quasi.quasis)
+        object.__setattr__(strings, "raw", JSArray(q.value["raw"] for q in n.quasi.quasis))
         args = [self.evaluate(e, env) for e in n.quasi.expressions]
-        return _call(fn, strings_obj, *args)
+        return _call(fn, strings, *args)
 
     def _ex_ArrayExpression(self, n, env):
         out = JSArray()
@@ -1841,7 +2182,7 @@ class Interpreter:
             if el is None:
                 out.append(UNDEFINED)
             elif el.type == "SpreadElement":
-                out.extend(self.evaluate(el.argument, env))
+                out.extend(self._iter_values(self.evaluate(el.argument, env)))
             else:
                 out.append(self.evaluate(el, env))
         return out
@@ -1873,6 +2214,12 @@ class Interpreter:
         return k.name if k.type == "Identifier" else _to_key(k.value)
 
     def _ex_FunctionExpression(self, n, env):
+        if getattr(n, "id", None):
+            # a named function expression: its own name is bound inside its body
+            scope = Environment(env)
+            fn = JSFunction(n, scope, self)
+            scope.declare(n.id.name, fn)
+            return fn
         return JSFunction(n, env, self)
 
     def _ex_ArrowFunctionExpression(self, n, env):
@@ -2015,6 +2362,22 @@ class Interpreter:
                 sup._construct(env.this, args)
             elif isinstance(sup, JSFunction):
                 sup.__call__(*args, _this=env.this)
+            elif callable(sup):
+                # `class MyError extends Error` -- a real native/domonic
+                # class, not something authored in JS. There's no existing
+                # instance to initialise in place (native __init__ builds a
+                # new object), so construct one and copy its real state
+                # (message/stack/...) onto `this`, matching what `super(msg)`
+                # is actually for here: making `this` behave like a real
+                # Error afterward.
+                try:
+                    native = sup(*args)
+                    for k, v in vars(native).items():
+                        env.this[k] = v
+                    if "name" not in env.this and hasattr(native, "name"):
+                        env.this["name"] = native.name
+                except Exception:  # noqa: BLE001 - a native ctor that doesn't cooperate isn't fatal
+                    pass
             return UNDEFINED
         if callee.type == "MemberExpression":
             obj = self.evaluate(callee.object, env)
@@ -2043,7 +2406,7 @@ class Interpreter:
             raise JSThrow(_make_error("TypeError", f"Class constructor {fn.name} cannot be invoked without 'new'"))
         if callable(fn):
             try:
-                return fn(*args)
+                return _tuplefix(fn(*args))   # domonic returns tuples where JS wants arrays
             except JSThrow:
                 raise
             except (_Return, _Break, _Continue):
@@ -2059,6 +2422,11 @@ class Interpreter:
             return cls.__call__(*args, _new=True)
         if isinstance(cls, JSFunction):
             inst = JSObject()
+            # classic `function Foo(){}` + `Foo.prototype.bar = ...` -- link
+            # the new instance to the constructor's *current* prototype
+            # object (not a copy), so later mutations of it stay visible and
+            # `instanceof` / method lookup can walk the chain (see js_get).
+            object.__setattr__(inst, "_proto_", cls.prototype)
             ret = cls.__call__(*args, _this=inst, _new=True)
             return ret if isinstance(ret, (dict, JSObject)) else inst
         if callable(cls):
@@ -2072,7 +2440,7 @@ class Interpreter:
         out = []
         for a in nodes:
             if a.type == "SpreadElement":
-                out.extend(self.evaluate(a.argument, env))
+                out.extend(self._iter_values(self.evaluate(a.argument, env)))
             else:
                 out.append(self.evaluate(a, env))
         return out
@@ -2114,6 +2482,9 @@ class Interpreter:
                 key = self._prop_key(p, env)
                 taken.add(key)
                 self._bind_pattern(p.value, js_get(value, key), env, declare)
+        elif not declare and t in ("MemberExpression", "ArrayExpression", "ObjectExpression"):
+            # `[a[i], obj.x] = ...` -- assignment targets inside a pattern
+            self._assign_target(target, value, env, pattern=True)
         else:
             raise JSSyntaxError(f"pattern {t}")
 
@@ -2182,28 +2553,41 @@ class Interpreter:
         return JSClass(name, ctor, methods, statics, superclass, self, fields, accessors)
 
 
+_EX_DISPATCH.update({name[4:]: fn for name, fn in vars(Interpreter).items() if name.startswith("_ex_")})
+_ST_DISPATCH.update({name[4:]: fn for name, fn in vars(Interpreter).items() if name.startswith("_st_")})
+
+
 # -- default global environment (domonic) ------------------------------
 
 
 def _make_string_ctor():
-    """A JS ``String`` that yields real Python ``str`` (domonic's
-    ``javascript.String`` is a wrapper object the interpreter's coercions do not
-    recognise). domonic's static helpers are copied across."""
+    """A JS ``String``. Coercion (``String(null)`` -> ``"null"``,
+    ``String([1,2])`` -> ``"1,2"``, ...) is computed by the interpreter's own
+    ``_stringify`` first -- domonic has no notion of this interpreter's
+    ``UNDEFINED`` sentinel, so it can't do that part -- then wrapped in
+    domonic's own ``String``. Since domonic 1.7 that's a real ``str``
+    *subclass* (not the disconnected wrapper object it used to be), so the
+    result is both JS-faithful *and* a genuine domonic value -- indistinguishable
+    from a plain ``str`` for every practical purpose (``isinstance``,
+    concatenation, comparison, dict-key-matching, ``json``) except an exact
+    ``type(x) is str`` check. domonic's static helpers are copied across."""
+    import domonic.javascript as _js
+
     def String(*a, _this=UNDEFINED, _new=False):
-        return "" if not a else _stringify(a[0])
-    try:
-        import domonic.javascript as _js
-        for n in ("fromCharCode", "fromCodePoint", "raw"):
-            if hasattr(_js.String, n):
-                setattr(String, n, getattr(_js.String, n))
-    except Exception:  # pragma: no cover
-        pass
+        return _js.String("" if not a else _stringify(a[0]))
+    for n in ("fromCharCode", "fromCodePoint", "raw"):
+        if hasattr(_js.String, n):
+            setattr(String, n, getattr(_js.String, n))
     String.name = String.__name__ = "String"
     return String
 
 
 def _number_ctor(*a, _this=UNDEFINED, _new=False):
-    return 0 if not a else js_number(a[0])
+    # same shape as `String` above: `js_number` does the sentinel-aware
+    # coercion, `domonic.javascript.Number` (a real `float` subclass since
+    # 1.7) supplies the genuine domonic type.
+    import domonic.javascript as _js
+    return _js.Number(0 if not a else js_number(a[0]))
 
 
 _number_ctor.name = _number_ctor.__name__ = "Number"
@@ -2214,6 +2598,25 @@ def _boolean_ctor(*a, _this=UNDEFINED, _new=False):
 
 
 _boolean_ctor.name = _boolean_ctor.__name__ = "Boolean"
+
+
+_SYM_COUNT = [0]
+
+
+def _symbol_ctor(desc=UNDEFINED, *_a, _this=UNDEFINED, _new=False):
+    """Symbols as opaque strings -- enough for ``[Symbol.iterator]() {}`` and
+    ``obj[Symbol.for('k')]`` keys. Not real unique primitives."""
+    _SYM_COUNT[0] += 1
+    return f"@@sym:{'' if desc is UNDEFINED else _stringify(desc)}:{_SYM_COUNT[0]}"
+
+
+for _w in ("iterator", "asyncIterator", "hasInstance", "toPrimitive", "toStringTag",
+           "isConcatSpreadable", "species", "match", "replace", "search", "split", "unscopables"):
+    setattr(_symbol_ctor, _w, f"@@{_w}")
+_symbol_ctor.for_ = staticmethod(lambda k=UNDEFINED, *_: f"@@for:{_stringify(k)}")
+setattr(_symbol_ctor, "for", _symbol_ctor.for_)
+_symbol_ctor.keyFor = staticmethod(lambda s=UNDEFINED, *_: s[6:] if isinstance(s, str) and s.startswith("@@for:") else UNDEFINED)
+_symbol_ctor.name = _symbol_ctor.__name__ = "Symbol"
 
 
 def _array_ctor(*a, _this=UNDEFINED, _new=False):
@@ -2268,12 +2671,24 @@ _number_ctor.isSafeInteger = staticmethod(
 
 
 def _object_assign(target, *sources):
+    # `Object.assign(someFunction, {...})` -- attaching properties straight
+    # onto a function object -- is real, common JS (this is exactly what
+    # broke loading voca.js). `target` isn't always a plain dict; anything
+    # else goes through `js_set` (JSClass -> .statics, otherwise a normal
+    # attribute), the same place a direct `target.key = value` would land.
+    is_plain_dict = isinstance(target, dict)
     for s in sources:
         if isinstance(s, dict):
-            target.update(s)
+            items = list(s.items())
         elif hasattr(s, "keys"):
-            for k in s.keys():
-                target[_to_key(k)] = s[k]
+            items = [(k, s[k]) for k in s.keys()]
+        else:
+            continue
+        for k, v in items:
+            if is_plain_dict:
+                target[_to_key(k)] = v
+            else:
+                js_set(target, k, v)
     return target
 
 
@@ -2289,7 +2704,11 @@ def _object_define_property(o, key, desc, *_):
         if "value" in desc:
             o[key] = desc["value"]
         elif callable(desc.get("get")) or callable(desc.get("set")):
-            acc = getattr(o, "_accessors", None)
+            # plain getattr(o, "_accessors", None) doesn't work here: JSObject's
+            # own __getattr__ returns UNDEFINED for a missing key instead of
+            # raising, so the `None` default never actually kicks in and
+            # `acc` silently ends up UNDEFINED instead of a fresh dict.
+            acc = _intern(o, "_accessors")
             if acc is None:
                 acc = {}
                 object.__setattr__(o, "_accessors", acc)
@@ -2331,8 +2750,19 @@ def _make_json_ns():
     def _to_plain(v, replacer):
         if v is UNDEFINED:
             return _JSON_SKIP
-        if isinstance(v, bool) or v is None or isinstance(v, (int, float, str)):
+        if isinstance(v, bool) or v is None or isinstance(v, str):
             return v
+        if isinstance(v, (int, float)):
+            # JS has one numeric type, so `Number(5)` (now a real
+            # `domonic.javascript.Number` -- a `float` *subclass*, per
+            # domonic 1.7 -- so a whole number stays float-backed at the C
+            # level even though it should print as JS would) must not leak
+            # its `.0` into the output (`JSON.stringify(Number(5))` is
+            # `"5"`, not `"5.0"`); NaN / +-Infinity serialise as `null`,
+            # matching domonic's own `JSON.stringify` fix for the same rule.
+            if v != v or v in (math.inf, -math.inf):
+                return None
+            return int(v) if isinstance(v, float) and v.is_integer() else v
         if isinstance(v, (JSFunction, JSClass)) or (callable(v) and not isinstance(v, type)):
             return _JSON_SKIP
         if isinstance(v, dict):
@@ -2397,78 +2827,268 @@ def _make_json_ns():
     return ns
 
 
+def _object_proto_to_string(*_a, _this=UNDEFINED):
+    """The real ``Object.prototype.toString`` -- a standalone function that
+    reads its *receiver* (``_this``, via ``.call(x)``/``.apply(x)``), not
+    whatever object it happened to be looked up on. `Object.prototype.toString
+    .call(x)` for robust type-tagging (``"[object Array]"``, ``"[object
+    Null]"``, ...) is one of the most common idioms in real-world JS --
+    lodash, Ramda, Mustache and Handlebars all reach for it just to load."""
+    v = _this
+    if v is UNDEFINED:
+        return "[object Undefined]"
+    if v is None:
+        return "[object Null]"
+    if isinstance(v, bool):
+        return "[object Boolean]"
+    if isinstance(v, (int, float)):
+        return "[object Number]"
+    if isinstance(v, str):
+        return "[object String]"
+    if isinstance(v, (list, JSArray)):
+        return "[object Array]"
+    if isinstance(v, (JSFunction, JSClass)) or callable(v):
+        return "[object Function]"
+    tag = type(v).__name__
+    return f"[object {tag}]" if tag not in ("dict", "JSObject") else "[object Object]"
+
+
+def _object_proto_has_own(k=UNDEFINED, *_a, _this=UNDEFINED):
+    return _to_key(k) in _this if isinstance(_this, dict) else False
+
+
+def _object_proto_value_of(*_a, _this=UNDEFINED):
+    return _this
+
+
+def _object_proto_false(*_a, _this=UNDEFINED):
+    return False   # isPrototypeOf / propertyIsEnumerable -- same simplification as _plain_object_method
+
+
+OBJECT_PROTOTYPE = JSObject({
+    "toString": _object_proto_to_string,
+    "hasOwnProperty": _object_proto_has_own,
+    "valueOf": _object_proto_value_of,
+    "isPrototypeOf": _object_proto_false,
+    "propertyIsEnumerable": _object_proto_false,
+})
+
+_OBJECT_PROTO_OWN_NAMES = frozenset(
+    {"constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable"}
+)
+
+
+class _GenericPrototype(dict):
+    """``SomeBuiltin.prototype`` for a constructor with no real prototype of
+    its own -- ``Array``/``Function``/``String``/``Number``/``RegExp``/
+    ``Date``/... are a mix of plain interpreter functions and real domonic
+    classes, neither of which define a ``.prototype``. A handful of fixed
+    methods (``toString``, ``hasOwnProperty``, ...) aren't enough on their
+    own: real-world code very commonly borrows a method as a standalone
+    reference first and supplies the receiver later --
+    ``var test = RegExp.prototype.test; test.call(re, str)`` (this is
+    exactly what broke loading ``mustache.min.js``) -- rather than hand-list
+    every method every builtin has, an unknown key delegates to the SAME
+    per-type method resolution ``js_get`` already does when a method is
+    called directly on a real value, just deferred until the receiver
+    actually shows up via ``.call``/``.apply``."""
+
+    def __init__(self, ctor):
+        super().__init__({
+            "constructor": ctor,
+            "toString": _object_proto_to_string,
+            "valueOf": _object_proto_value_of,
+            "hasOwnProperty": _object_proto_has_own,
+            "isPrototypeOf": _object_proto_false,
+            "propertyIsEnumerable": _object_proto_false,
+        })
+
+    def __contains__(self, key):
+        return True   # so `js_get`'s `if key in obj` always takes the __getitem__ path below
+
+    def __missing__(self, key):
+        def _delegated(*args, _this=UNDEFINED):
+            return _invoke_any(js_get(_this, key), list(args), UNDEFINED)
+        return _delegated
+
+
+_GENERIC_PROTOTYPES = {}
+
+
+def _generic_prototype_for(ctor):
+    name = getattr(ctor, "__name__", None) or getattr(ctor, "name", None) or str(id(ctor))
+    proto = _GENERIC_PROTOTYPES.get(name)
+    if proto is None:
+        proto = _GENERIC_PROTOTYPES[name] = _GenericPrototype(ctor)
+    return proto
+
+
+def _object_ctor_call(v=UNDEFINED, *_, _this=UNDEFINED, _new=False):
+    """``Object(value)`` -- real JS: `undefined`/`null` box to a fresh empty
+    object, anything already object-shaped comes back unchanged (a full,
+    spec-accurate primitive-wrapper box for numbers/strings is *not* worth
+    it here -- no real-world code this harness has hit relies on the boxed
+    wrapper's identity being distinct from the primitive)."""
+    if v is UNDEFINED or v is None:
+        return JSObject()
+    return v
+
+
 def _make_object_ns():
-    ns = JSObject()
-    ns.update({
-        "keys": lambda o=UNDEFINED, *_: JSArray(o.keys()) if isinstance(o, dict) else JSArray(),
-        "values": lambda o=UNDEFINED, *_: JSArray(o.values()) if isinstance(o, dict) else JSArray(),
-        "entries": lambda o=UNDEFINED, *_: JSArray(JSArray([k, v]) for k, v in o.items()) if isinstance(o, dict) else JSArray(),
-        "assign": _object_assign,
-        "freeze": _object_freeze,
-        "isFrozen": lambda o=UNDEFINED, *_: bool(_intern(o, "_frozen")),
-        "fromEntries": lambda it=(), *_: JSObject({_to_key(k): v for k, v in it}),
-        "getOwnPropertyNames": lambda o=UNDEFINED, *_: JSArray(o.keys()) if isinstance(o, dict) else JSArray(),
-        "getOwnPropertyDescriptor": _obj_descriptor,
-        "create": lambda proto=None, props=UNDEFINED, *_: JSObject(),
-        "defineProperty": _object_define_property,
-        "getPrototypeOf": lambda o=UNDEFINED, *_: None,
-        "setPrototypeOf": lambda o=UNDEFINED, p=UNDEFINED, *_: o,
-        "preventExtensions": lambda o=UNDEFINED, *_: o,
-    })
+    # `Object` isn't just a namespace of statics -- it's itself directly
+    # callable (`Object(value)`, a common defensive-coercion idiom used by
+    # lodash/handlebars/fuse.js among others); a plain `JSObject` can't be
+    # called, so this builds the same real function-with-statics shape
+    # `_array_ctor` uses, rather than a dict. A fresh wrapper per call (not
+    # the module-level `_object_ctor_call` itself) -- every `Interpreter`
+    # gets its own `Object`, so its statics stay session-isolated.
+    def ns(v=UNDEFINED, *a, **kw):
+        return _object_ctor_call(v, *a, **kw)
+    ns.name = ns.__name__ = "Object"
+    ns.prototype = OBJECT_PROTOTYPE
+    ns.keys = lambda o=UNDEFINED, *_: JSArray(o.keys()) if isinstance(o, dict) else JSArray()
+    ns.values = lambda o=UNDEFINED, *_: JSArray(o.values()) if isinstance(o, dict) else JSArray()
+    ns.entries = lambda o=UNDEFINED, *_: JSArray(JSArray([k, v]) for k, v in o.items()) if isinstance(o, dict) else JSArray()
+    ns.assign = _object_assign
+    ns.freeze = _object_freeze
+    ns.isFrozen = lambda o=UNDEFINED, *_: bool(_intern(o, "_frozen"))
+    ns.fromEntries = lambda it=(), *_: JSObject({_to_key(k): v for k, v in it})
+    ns.getOwnPropertyNames = lambda o=UNDEFINED, *_: JSArray(o.keys()) if isinstance(o, dict) else JSArray()
+    ns.getOwnPropertyDescriptor = _obj_descriptor
+    ns.create = lambda proto=None, props=UNDEFINED, *_: JSObject()
+    ns.defineProperty = _object_define_property
+    ns.getPrototypeOf = lambda o=UNDEFINED, *_: None
+    ns.setPrototypeOf = lambda o=UNDEFINED, p=UNDEFINED, *_: o
+    ns.preventExtensions = lambda o=UNDEFINED, *_: o
     return ns
 
 
-class _Math:
-    PI = math.pi
-    E = math.e
-    abs = staticmethod(lambda x: abs(js_number(x)))
-    floor = staticmethod(lambda x: math.floor(js_number(x)))
-    ceil = staticmethod(lambda x: math.ceil(js_number(x)))
-    round = staticmethod(lambda x: math.floor(js_number(x) + 0.5))
-    trunc = staticmethod(lambda x: math.trunc(js_number(x)))
-    sign = staticmethod(lambda x: (js_number(x) > 0) - (js_number(x) < 0))
-    sqrt = staticmethod(lambda x: math.sqrt(js_number(x)))
-    cbrt = staticmethod(lambda x: math.copysign(abs(js_number(x)) ** (1 / 3), js_number(x)))
-    pow = staticmethod(lambda a, b: js_number(a) ** js_number(b))
-    hypot = staticmethod(lambda *a: math.hypot(*(js_number(x) for x in a)))
-    max = staticmethod(lambda *a: max((js_number(x) for x in a), default=-math.inf))
-    min = staticmethod(lambda *a: min((js_number(x) for x in a), default=math.inf))
-    log = staticmethod(lambda x: math.log(js_number(x)))
-    log2 = staticmethod(lambda x: math.log2(js_number(x)))
-    log10 = staticmethod(lambda x: math.log10(js_number(x)))
-    exp = staticmethod(lambda x: math.exp(js_number(x)))
-    sin = staticmethod(lambda x: math.sin(js_number(x)))
-    cos = staticmethod(lambda x: math.cos(js_number(x)))
-    tan = staticmethod(lambda x: math.tan(js_number(x)))
-    atan2 = staticmethod(lambda y, x: math.atan2(js_number(y), js_number(x)))
-
-    @staticmethod
-    def random():
-        import random as _r
-        return _r.random()
+_FMT_SPEC = re.compile(r"%[sdifoOjc%]")
 
 
-def _error_ctor(name):
-    def ctor(*a, _this=UNDEFINED, _new=False):
-        e = JSObject()
-        e["name"] = name
-        e["message"] = _stringify(a[0]) if a else ""
-        e["stack"] = f"{name}: {e['message']}"
-        return e
-    ctor.__repr__ = lambda: f"function {name}() {{ [native code] }}"
-    ctor.name = name           # JS: TypeError.name === "TypeError"
-    ctor.__err_name__ = name   # matched by `instanceof` (see _BINOPS)
-    return ctor
+def _console_format(args):
+    """Apply ``%s`` / ``%d`` / ``%o`` / ``%c`` substitution like a browser."""
+    if not args or not isinstance(args[0], str) or "%" not in args[0]:
+        return " ".join(_stringify(x) for x in args)
+    fmt, rest = args[0], list(args[1:])
+    out = []
+    pos = 0
+    for m in _FMT_SPEC.finditer(fmt):
+        out.append(fmt[pos:m.start()])
+        pos = m.end()
+        spec = m.group()
+        if spec == "%%":
+            out.append("%")
+        elif spec == "%c":
+            if rest:
+                rest.pop(0)   # CSS -- ignored in a text console
+        elif not rest:
+            out.append(spec)
+        elif spec in ("%d", "%i"):
+            n = js_number(rest.pop(0))
+            out.append("NaN" if _is_nan(n) else str(int(n)))
+        elif spec == "%f":
+            out.append(_stringify(js_number(rest.pop(0))))
+        else:  # %s %o %O %j
+            out.append(_stringify(rest.pop(0)))
+    out.append(fmt[pos:])
+    tail = "".join(out)
+    return " ".join([tail] + [_stringify(x) for x in rest])
 
 
 class _Console:
     def __init__(self):
         self.lines = []
+        self._groups = 0
+        self._counts = {}
+        self._timers = {}
+
+    def _emit(self, text, stream="out"):
+        self.lines.append(("  " * self._groups) + text)
+        return UNDEFINED   # console methods are `-> undefined` in JS
 
     def log(self, *a):
-        self.lines.append(" ".join(_stringify(x) for x in a))
+        return self._emit(_console_format(a))
 
-    warn = error = info = debug = trace = log
+    info = debug = log
+
+    def warn(self, *a):
+        return self._emit(_console_format(a), "err")
+
+    error = trace = warn
+
+    def dir(self, *a):
+        return self._emit(_console_format(a))
+
+    def assert_(self, cond=UNDEFINED, *a):
+        if not js_truthy(cond):
+            self._emit("Assertion failed" + (": " + _console_format(a) if a else ""), "err")
+        return UNDEFINED
+
+    def group(self, *a):
+        if a:
+            self._emit(_console_format(a))
+        self._groups += 1
+        return UNDEFINED
+
+    groupCollapsed = group
+
+    def groupEnd(self, *_):
+        self._groups = max(0, self._groups - 1)
+
+    def count(self, label="default", *_):
+        label = _stringify(label)
+        self._counts[label] = self._counts.get(label, 0) + 1
+        self._emit(f"{label}: {self._counts[label]}")
+
+    def countReset(self, label="default", *_):
+        self._counts[_stringify(label)] = 0
+
+    def time(self, label="default", *_):
+        import time as _t
+        self._timers[_stringify(label)] = _t.perf_counter()
+
+    def timeEnd(self, label="default", *_):
+        import time as _t
+        label = _stringify(label)
+        t0 = self._timers.pop(label, None)
+        if t0 is not None:
+            self._emit(f"{label}: {(_t.perf_counter() - t0) * 1000:.3f}ms")
+
+    timeLog = timeEnd
+
+    def table(self, data=UNDEFINED, *_):
+        rows = list(data) if isinstance(data, (list, JSArray)) else (
+            list(data.items()) if isinstance(data, dict) else [])
+        if not rows:
+            self._emit(_stringify(data))
+            return
+        if isinstance(data, dict):
+            cols = ["(key)", "Values"]
+            body = [[_stringify(k), _stringify(v)] for k, v in rows]
+        else:
+            keys = []
+            for r in rows:
+                if isinstance(r, dict):
+                    for k in r:
+                        if k not in keys:
+                            keys.append(k)
+            if keys:
+                cols = ["(index)"] + keys
+                body = [[str(i)] + [_stringify(r.get(k, "")) if isinstance(r, dict) else ""
+                                    for k in keys] for i, r in enumerate(rows)]
+            else:
+                cols = ["(index)", "Values"]
+                body = [[str(i), _stringify(r)] for i, r in enumerate(rows)]
+        widths = [max(len(cols[c]), *(len(row[c]) for row in body)) for c in range(len(cols))]
+        line = lambda cells: "| " + " | ".join(c.ljust(widths[i]) for i, c in enumerate(cells)) + " |"
+        self._emit(line(cols))
+        self._emit("|" + "|".join("-" * (w + 2) for w in widths) + "|")
+        for row in body:
+            self._emit(line(row))
+
+    def clear(self, *_):
+        self.lines.clear()
 
 
 class _Doc:
@@ -2617,21 +3237,22 @@ class _Window:
             "window": self,
             "self": self,
             "globalThis": self,
-            "Math": _Math,
+            "Math": _js.Math,   # domonic 1.6: Math.max/min variadic, full method set
             "Object": _make_object_ns(),
             "Array": _array_ctor,
+            "Symbol": _symbol_ctor,
             "String": _make_string_ctor(),
             "Number": _number_ctor,
             "Boolean": _boolean_ctor,
             "JSON": _make_json_ns(),
-            "Error": _error_ctor("Error"),
-            "TypeError": _error_ctor("TypeError"),
-            "RangeError": _error_ctor("RangeError"),
-            "SyntaxError": _error_ctor("SyntaxError"),
-            "ReferenceError": _error_ctor("ReferenceError"),
-            "EvalError": _error_ctor("EvalError"),
-            "URIError": _error_ctor("URIError"),
-            "AggregateError": _error_ctor("AggregateError"),
+            "Error": _js.Error,   # domonic 1.6: the whole error family, real classes
+            "TypeError": _js.TypeError,
+            "RangeError": _js.RangeError,
+            "SyntaxError": _js.SyntaxError,
+            "ReferenceError": _js.ReferenceError,
+            "EvalError": _js.EvalError,
+            "URIError": _js.URIError,
+            "AggregateError": _js.AggregateError,
             "isNaN": lambda v: _is_nan(js_number(v)),
             "isFinite": lambda v: not _is_nan(js_number(v)) and js_number(v) not in (math.inf, -math.inf),
             "NaN": float("nan"),
@@ -2662,28 +3283,44 @@ def default_globals(document=None):
     return dict(window._own), console, document, window
 
 
-def make_interpreter(extra_globals=None, console=None, document=None):
+def make_interpreter(extra_globals=None, console=None, document=None, commonjs=False):
     """Build an :class:`Interpreter` wired to a fresh domonic ``window`` /
     ``document`` / ``console``, with ``extra_globals`` merged into the global
     object (and reachable as ``window.<name>``). Returns
     ``(interpreter, console, document, window)``. Callers drive it with repeated
     ``interpreter.run(src)`` -- state accumulates in one global scope, which is
-    what a REPL or an embedding host wants."""
+    what a REPL or an embedding host wants.
+
+    ``commonjs=True`` adds `module` / `exports` / a bare-bones `require` --
+    off by default because *merely their presence* changes which branch a
+    UMD bundle's own environment-detection takes (see `_install_commonjs_globals`);
+    turn it on only for a script you know is genuinely CommonJS/Node-shaped,
+    not a browser bundle."""
     console = console if console is not None else _Console()
     document = document or _Doc()
     window = _Window(console, document)
     for k, v in (extra_globals or {}).items():
         window._own[k] = v
-    interp = Interpreter(dict(window._own), global_object=window)
+    interp = Interpreter(dict(window._own), global_object=window, commonjs=commonjs)
+    # `Interpreter.__init__` installs its own pragmatic-runtime globals
+    # (`Promise`, `setTimeout`, `require`, ...) *after* the constructor's
+    # `globals_`, so a caller's own version of one of those would otherwise
+    # always lose -- reapply `extra_globals` on top so a richer host
+    # `require` (myjs's, with real `fs`/`path`/`http`/... built-ins) wins
+    # over the core interpreter's bare one.
+    for k, v in (extra_globals or {}).items():
+        interp.global_env.declare(k, v)
+        window._own[k] = v
     return interp, console, document, window
 
 
-def run_js(src, globals_=None, ecma_version=2022):
+def run_js(src, globals_=None, ecma_version=2022, commonjs=False):
     """Run ``src`` and return ``(document, console_lines)``.
 
     With no ``globals_`` a fresh domonic ``document`` (``<html><body>``) plus a
     ``console`` capture are provided; the returned document reflects whatever the
-    script built.
+    script built. ``commonjs=True`` adds `module` / `exports` / `require` --
+    see `Interpreter._install_commonjs_globals` for why that's opt-in.
     """
     if globals_ is None:
         g, console, document, window = default_globals()
@@ -2692,6 +3329,6 @@ def run_js(src, globals_=None, ecma_version=2022):
         console = g.get("console")
         document = g.get("document")
         window = g.get("window")
-    Interpreter(g, global_object=window).run(src, ecma_version=ecma_version)
+    Interpreter(g, global_object=window, commonjs=commonjs).run(src, ecma_version=ecma_version)
     lines = console.lines if console is not None and hasattr(console, "lines") else []
     return document, lines

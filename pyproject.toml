@@ -18,7 +18,13 @@ dependencies = [
     # ports the Mermaid renderers need.
     # 1.6.0: UTF-16 String semantics, static String.fromCharCode, numeric
     # charCodeAt-past-end, [^] regex translation -- the acorn tokenizer port.
-    "domonic>=1.6.0",
+    # 1.7.0: String/Number are real str/float subclasses (the interpreter's
+    # own String()/Number() now delegate to them instead of an independent
+    # implementation -- broken on an older domonic, where they're a
+    # disconnected wrapper object instead), JSON.stringify integral-float/
+    # NaN/Infinity normalisation, textContent ToString coercion, uppercase
+    # tagName/nodeName, html.parser implied <tbody>/<thead>.
+    "domonic>=1.7.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -60,6 +66,11 @@ app = [
 examples = [
     "pywebview>=5.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# packaging/myjs/src is a symlink to ../../src; keep collection out of it
+norecursedirs = ["packaging", "build", "dist", "*.egg-info", ".venv"]
 
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }
