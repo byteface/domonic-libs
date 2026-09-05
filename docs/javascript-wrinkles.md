@@ -2,7 +2,7 @@
 
 Where [`docs/domonic-wrinkles.md`](domonic-wrinkles.md) tracks the DOM, this file tracks `domonic.javascript` -- the runtime shim (`String`, `Array`, `Number`, `RegExp`, `Math`, ...) that every port in this repo stands on. It is stress-tested by porting [acorn](https://github.com/acornjs/acorn) and by a curated test262-style battery run through the interpreter (`python -m domonic_libs.js262`, scorecard in [`docs/js-compliance.md`](js-compliance.md)).
 
-The battery is at **100%** (175/175). **domonic 1.6 and 1.7 closed nearly all of this list** (see *Resolved* below); the interpreter deleted its `Math` and `Error` shims in 1.6, and its `String` / `Number` ones in 1.7 (once domonic 1.7 made them real `str` / `float` subclasses), and now delegates all four to `domonic.javascript` -- `Math` through a thin wrapper that only fixes libm rounding (below), the rest outright. (`Object`, `JSON`, and `Array.from` were never shimmed the same way -- the interpreter has always had its own independent implementations of those, so domonic 1.7 fixing the matching `domonic.javascript` gaps helps anyone using `domonic.javascript` directly, without changing the interpreter.) Verified against **published `domonic 1.7.0`**. What's left: `Boolean` still ships its own interpreter version (Python can't subclass `bool`), a narrow `Map` key gap, a `domonic.javascript`-direct `String.fromCodePoint` nuance, and `Math.cbrt`/`log2`/`log10` platform-libm rounding (worked around).
+The battery is at **100%** (175/175). **domonic 1.6 and 1.7 closed nearly all of this list** (see *Resolved* below); the interpreter deleted its `Math` and `Error` shims in 1.6, and its `String` / `Number` ones in 1.7 (once domonic 1.7 made them real `str` / `float` subclasses), and now delegates all four to `domonic.javascript` -- `Math` through a thin wrapper that only fixes libm rounding (below), the rest outright. (`Object`, `JSON`, and `Array.from` were never shimmed the same way -- the interpreter has always had its own independent implementations of those, so domonic 1.7 fixing the matching `domonic.javascript` gaps helps anyone using `domonic.javascript` directly, without changing the interpreter.) Verified against **published `domonic 1.7.0`**. What's left: `Boolean` still ships its own interpreter version (Python can't subclass `bool`), a narrow `Map` key gap, a `domonic.javascript`-direct `String.fromCodePoint` nuance, `Math.cbrt`/`log2`/`log10` platform-libm rounding (worked around), and `RegExp` reporting an unmatched group as `null` rather than `undefined` (#4).
 
 ## 1. `String()` / `Number()` return wrapper objects -- substantially narrowed, `Boolean()` still fully open
 
@@ -46,6 +46,17 @@ Math.cbrt(27)   # 3.0000000000000004 on glibc (Linux)   (JS/V8: exactly 3)
 ```
 
 `domonic.javascript.Math` delegates `cbrt` / `log2` / `log10` to Python's `math`, which is backed by the platform libm. glibc's `cbrt` isn't correctly rounded for all inputs, so `cbrt(27)` comes back a ULP high; macOS's libm and V8 both give exactly `3`. This surfaced as a **CI failure on Linux but not macOS** (`number-math.js`, `Math.cbrt(27) === 3`). **The interpreter works around it** -- `_make_math_ns` in `interpret.py` snaps `cbrt` / `log2` / `log10` back to the correctly-rounded value for the cases where the rounded result provably cubes/exponentiates back to the input (irrational results untouched, every other `Math` method passes straight through). Drop that shim once `domonic.javascript.Math` rounds these itself: the clean upstream fix is `round(r)` when `round(r) ** 3 == x`.
+
+## 4. A regex match returns `null`, not `undefined`, for an unmatched capture group
+
+```python
+from domonic.javascript import RegExp
+"ac".match(RegExp("(a)(x)?(c)"))[1]   # group 2 comes back as None
+```
+
+JS gives `undefined` for a capture group that didn't participate in the match; `domonic.javascript`'s `RegExp` gives `null` (Python `None`). Code that tests a group with `=== undefined` (very common in a spec-parser -- `m[8] === undefined ? default : +m[8]`) then takes the wrong branch. **Workaround:** test the group for truthiness or `== null` instead of `=== undefined`. Surfaced writing the f-string `:format` mini-language for `domonic_libs.pyjs` (`__py.format`), where an absent `.precision` group was read as `0` and truncated every value to the empty string.
+
+While chasing that one: **the interpreter's `Array.prototype.join` used to render an `undefined` / `null` element as the literal text `"undefined"`** (`new Array(3).join(" ")` → `"undefinedundefined"` instead of `"  "`). JS coerces both to `""` in `join`; `_array_method` in `interpret.py` now does too.
 
 ---
 

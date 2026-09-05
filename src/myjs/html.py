@@ -288,6 +288,17 @@ class Page:
                 raise TimeoutError(f"waited {timeout}s for {selector!r}")
             time.sleep(poll)
 
+    def frames(self, n=1, dt=16):
+        """Advance ``n`` animation frames -- fire the page's pending
+        ``requestAnimationFrame`` callbacks ``n`` times, draining timers and
+        microtasks between each. The headless equivalent of letting the browser
+        paint ``n`` times."""
+        loop = self.session.interp.loop
+        for _ in range(int(n)):
+            loop.pump_frames(1, dt)
+            loop.run()
+        return self
+
     def wait(self, seconds):
         end = time.monotonic() + seconds
         while time.monotonic() < end:

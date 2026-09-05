@@ -74,6 +74,30 @@ def test_classic_prototype_based_inheritance():
     ) == ["late-ok"]
 
 
+def test_instanceof_and_object_create_for_es5_constructors():
+    # `new Foo() instanceof Foo` for a plain `function` constructor -- broken
+    # before (only `class` instances resolved), which broke every Babel
+    # bundle: `_classCallCheck` throws "Cannot call a class as a function".
+    assert out("function Foo(){}\nconsole.log(new Foo() instanceof Foo, new Foo() instanceof Object);") == ["true true"]
+    assert out("function Foo(){} function Bar(){}\nconsole.log(new Foo() instanceof Bar);") == ["false"]
+    # `Object.create(proto)` must link the chain so `instanceof` walks it --
+    # this is exactly Babel's `_inherits(sub, sup)`
+    assert out(
+        "function A(){} A.prototype.hi = function(){ return 'hi'; };\n"
+        "function B(){} B.prototype = Object.create(A.prototype, {constructor: {value: B}});\n"
+        "var b = new B();\n"
+        "console.log(b.hi(), b instanceof B, b instanceof A, Object.getPrototypeOf(b) === B.prototype);"
+    ) == ["hi true true true"]
+    # the full Babel `_classCallCheck` guard now passes
+    assert out(
+        '"use strict";\n'
+        'function _classCallCheck(i, C){ if (!(i instanceof C)) throw new TypeError("Cannot call a class as a function"); }\n'
+        'var Pt = (function(){ function Pt(x){ _classCallCheck(this, Pt); this.x = x; }\n'
+        '  Pt.prototype.get = function(){ return this.x; }; return Pt; })();\n'
+        'console.log(new Pt(7).get());'
+    ) == ["7"]
+
+
 def test_typeof_symbol():
     # Symbols are opaque strings under the hood (see _symbol_ctor) -- without
     # a real typeof case they self-report as "string", and any

@@ -9,6 +9,7 @@
     dlx validate isEmail ada@example.com
     dlx qs parse "user[name]=ada&tags[]=a&tags[]=b"
     dlx minify app.js -o app.min.js
+    dlx pyjs script.py -o script.js
     dlx dagre graph.txt --rankdir LR -o graph.svg
 
 Every text command reads a file argument, or stdin when the argument is ``-`` or
@@ -298,6 +299,22 @@ def _cmd_qs(args) -> int:
 # --------------------------------------------------------------------------
 
 
+def _cmd_pyjs(args) -> int:
+    from .pyjs import PyJSError, transpile
+
+    try:
+        out = transpile(_read(args.input), minify=args.minify,
+                        runtime=not args.no_runtime)
+    except SyntaxError as exc:
+        print(f"{_PROG}: not valid Python: {exc}", file=sys.stderr)
+        return 1
+    except PyJSError as exc:
+        print(f"{_PROG}: unsupported: {exc}", file=sys.stderr)
+        return 1
+    _write(out, args.output)
+    return 0
+
+
 def _cmd_js(args) -> int:
     from .acorn import generate, parse
 
@@ -474,6 +491,12 @@ def build_parser() -> argparse.ArgumentParser:
         j.add_argument("--module", action="store_true", help="parse as an ES module")
         j.add_argument("--indent", type=int, default=2, help="fmt: spaces per level (default 2)")
         j.set_defaults(func=_cmd_js)
+
+    py = sub.add_parser("pyjs", help="transpile Python to JavaScript (a subset -> ESTree -> JS)")
+    _io_args(py, input_help="a .py file ('-' or omitted = stdin)")
+    py.add_argument("--minify", action="store_true", help="strip whitespace from the output")
+    py.add_argument("--no-runtime", action="store_true", help="omit the `__py` runtime shim")
+    py.set_defaults(func=_cmd_pyjs)
 
     return parser
 

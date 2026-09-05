@@ -37,6 +37,8 @@ import time
 
 from .parser import Parser
 
+_PERF_ORIGIN = time.monotonic()   # `performance.now()` counts from process start
+
 # ``import``/``export`` at the start of a line -> parse as an ES module.
 _MODULE_HINT = re.compile(r"^\s*(?:export\b|import\s+(?:[\"']|[\w{*]))", re.M)
 
@@ -101,10 +103,41 @@ class EventLoop:
         self._next_tid = 0
         self._live = set()         # tids of active timers / intervals
         self._pending_io = 0
+        self._raf = []             # [(tid, cb)] pending animation-frame callbacks
+        self._raf_next = 0
+        self._raf_clock = 0.0      # virtual ms handed to rAF callbacks
+        self.raf_errors = []       # JSThrows raised inside rAF callbacks
 
     # -- scheduling
     def micro(self, cb):
         self._micro.append(cb)
+
+    def raf(self, cb):
+        """Queue a ``requestAnimationFrame`` callback. rAF callbacks do *not*
+        count as pending work -- an endless ``requestAnimationFrame`` chain (the
+        normal browser render loop) must not keep :meth:`run` from returning.
+        A headless driver advances them explicitly with :meth:`pump_frames`."""
+        self._raf_next += 1
+        self._raf.append((self._raf_next, cb))
+        return self._raf_next
+
+    def cancel_raf(self, tid):
+        self._raf = [(t, c) for t, c in self._raf if t != tid]
+
+    def pump_frames(self, n=1, dt=16.0):
+        """Fire ``n`` animation frames. Each frame flushes the callbacks queued
+        as of its start (so a callback re-arming itself lands in the next
+        frame, not this one), advances the virtual clock by ``dt`` ms, then
+        drains any microtasks the callbacks scheduled."""
+        for _ in range(int(n)):
+            batch, self._raf = self._raf, []
+            self._raf_clock += dt
+            for _tid, cb in batch:
+                try:
+                    cb(self._raf_clock)
+                except JSThrow as exc:   # a browser logs it and paints the next frame
+                    self.raf_errors.append(exc)
+            self._drain_micro()
 
     def timer(self, cb, ms, interval=False, _tid=None):
         if _tid is None:
@@ -1329,7 +1362,8 @@ def _array_method(arr, key):
         "slice": lambda *a: JSArray(arr[slice(*[int(x) if x is not UNDEFINED else None for x in (a + (UNDEFINED, UNDEFINED))[:2]])]),
         "indexOf": lambda x, *_: arr.index(x) if x in arr else -1,
         "includes": lambda x, *_: x in arr,
-        "join": lambda sep=",": _stringify(sep).join(_stringify(x) for x in arr),
+        "join": lambda sep=",": _stringify(sep).join(
+            "" if x is UNDEFINED or x is None else _stringify(x) for x in arr),
         "concat": lambda *a: JSArray(list(arr) + [i for x in a for i in (x if isinstance(x, (list, JSArray)) else [x])]),
         "reverse": lambda: (arr.reverse(), arr)[1],
         "map": lambda fn, *_: JSArray(_call(fn, x, i, arr) for i, x in enumerate(arr)),
@@ -1498,6 +1532,18 @@ def _js_in(a, b):
 def _js_instanceof(a, b):
     if isinstance(a, JSInstance):
         return _is_instance(a, b)
+    if isinstance(b, JSFunction):
+        # classic ES5 `function Foo(){}` -- `new Foo()` linked the instance's
+        # `_proto_` to `Foo.prototype` (see _ex_NewExpression); walk that chain.
+        target = getattr(b, "prototype", None)
+        proto = _intern(a, "_proto_")
+        seen = set()
+        while isinstance(proto, dict) and id(proto) not in seen:
+            if proto is target:
+                return True
+            seen.add(id(proto))
+            proto = _intern(proto, "_proto_")
+        return False
     bname = getattr(b, "__name__", None) or getattr(b, "name", None)
     if bname == "Array":
         return isinstance(a, (list, JSArray))
@@ -1600,6 +1646,10 @@ class Interpreter:
             "clearInterval": lambda tid=None, *_: loop.clear(tid) if tid is not None else None,
             "queueMicrotask": lambda fn, *_: loop.micro(lambda: _call(fn)),
             "setImmediate": lambda fn, *a: loop.timer(lambda: _call(fn, *a), 0),
+            "requestAnimationFrame": lambda fn, *_: loop.raf(lambda ts: _call(fn, ts)),
+            "cancelAnimationFrame": lambda tid=None, *_: loop.cancel_raf(tid) if tid is not None else None,
+            "performance": JSObject({"now": lambda *_: loop._raf_clock
+                                     or (time.monotonic() - _PERF_ORIGIN) * 1000.0}),
             "eval": self._eval_global,
         }
         for k, v in g.items():
@@ -2972,6 +3022,27 @@ def _object_ctor_call(v=UNDEFINED, *_, _this=UNDEFINED, _new=False):
     return v
 
 
+def _object_create(proto=None, props=UNDEFINED, *_):
+    """``Object.create(proto[, props])`` -- link the new object's `_proto_`
+    (so `instanceof` / method lookup walk it) and apply any `value`
+    descriptors. This is what Babel's `_inherits` leans on:
+    `subClass.prototype = Object.create(superClass.prototype, ...)`."""
+    o = JSObject()
+    if isinstance(proto, dict):
+        object.__setattr__(o, "_proto_", proto)
+    if isinstance(props, dict):
+        for key, desc in props.items():
+            if isinstance(desc, dict) and "value" in desc:
+                o[key] = desc["value"]
+    return o
+
+
+def _object_set_prototype_of(o=UNDEFINED, p=UNDEFINED, *_):
+    if isinstance(o, dict) and isinstance(p, dict):
+        object.__setattr__(o, "_proto_", p)
+    return o
+
+
 def _make_object_ns():
     # `Object` isn't just a namespace of statics -- it's itself directly
     # callable (`Object(value)`, a common defensive-coercion idiom used by
@@ -2993,10 +3064,10 @@ def _make_object_ns():
     ns.fromEntries = lambda it=(), *_: JSObject({_to_key(k): v for k, v in it})
     ns.getOwnPropertyNames = lambda o=UNDEFINED, *_: JSArray(o.keys()) if isinstance(o, dict) else JSArray()
     ns.getOwnPropertyDescriptor = _obj_descriptor
-    ns.create = lambda proto=None, props=UNDEFINED, *_: JSObject()
+    ns.create = _object_create
     ns.defineProperty = _object_define_property
-    ns.getPrototypeOf = lambda o=UNDEFINED, *_: None
-    ns.setPrototypeOf = lambda o=UNDEFINED, p=UNDEFINED, *_: o
+    ns.getPrototypeOf = lambda o=UNDEFINED, *_: _intern(o, "_proto_")
+    ns.setPrototypeOf = _object_set_prototype_of
     ns.preventExtensions = lambda o=UNDEFINED, *_: o
     return ns
 

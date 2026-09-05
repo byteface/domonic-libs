@@ -52,6 +52,13 @@ str(div(_title="a<b>c"))                     # 'title="a&lt;b&gt;c"'
 
 A port that must match browser output byte-for-byte (like DOMPurify's fixtures) should serialise through `outerHTML`, not `str(node)`.
 
+## 8. `CanvasRenderingContext2D` / `ImageData` are recorders, and `ImageData.data` is a strict `bytearray`
+
+`domonic.webapi.canvas.CanvasRenderingContext2D` doesn't rasterise -- it appends each call to `ctx.commands` for inspection (which is what makes it useful for headless testing: [examples/pyjs_canvas.py](../examples/pyjs_canvas.py) drives an animation and reads the draw calls back). Two consequences for a faithful port:
+
+* `ctx.getImageData(...)` returns a **fresh zero-filled** `ImageData`, not the pixels of anything previously drawn -- there is no backing buffer to read from.
+* `ImageData.data` is a plain `bytearray`, where the browser's is a `Uint8ClampedArray`. A `Uint8ClampedArray` coerces and clamps on assignment (`d[i] = 3.7` stores `4`, `d[i] = 300` stores `255`); a `bytearray` raises `TypeError` on a non-integer and `ValueError` outside `0..255`. Through the interpreter this bites quietly: `d[i] = (x * 7) % 256` no-ops, because the interpreter's `%` (like all its arithmetic -- JS has one number type) yields a Python `float`, and `bytearray.__setitem__` rejects `float` -- the exception is swallowed and the pixel stays `0`. Wrap pixel writes in `int(...)` (`d[i] = int((x * 7) % 256)`), which is idiomatic for byte values anyway. The clean upstream fix is for `ImageData.data` to be a clamping typed-array view.
+
 ---
 
 ## Resolved in domonic 1.7.0

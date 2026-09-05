@@ -552,6 +552,39 @@ def test_page_wait_for_async_mutation():
     assert page.exists("li[data-ready='1']")
 
 
+def test_request_animation_frame_and_page_frames():
+    # an endless rAF chain (the normal render loop) must not hang the page
+    # load; `Page.frames(n)` steps it n times.
+    page = myjs.Page(
+        "<html><body><b id=n>0</b><canvas id=c></canvas><script>"
+        "var ctx = document.getElementById('c').getContext('2d');"
+        "var i = 0;"
+        "function loop(ts){ i++; document.getElementById('n').textContent = String(i);"
+        "  ctx.fillRect(0, 0, i, i); requestAnimationFrame(loop); }"
+        "requestAnimationFrame(loop);"
+        "</script></body></html>")
+    assert page.text("#n") == "0"          # nothing painted yet -- page is at rest
+    page.frames(1)
+    assert page.text("#n") == "1"
+    page.frames(9)
+    assert page.text("#n") == "10"
+    ctx = page.query("#c").getContext("2d")
+    assert sum(cmd["name"] == "fillRect" for cmd in ctx.commands) == 10
+
+
+def test_performance_now_advances():
+    s = Session()
+    assert s.eval("var a = performance.now(); a >= 0") is True
+
+
+def test_array_join_coerces_undefined_and_null_to_empty_string():
+    # JS `Array.prototype.join` renders undefined / null / holes as "" --
+    # `new Array(3).join("-")` is "--", not "undefined-undefined".
+    s = Session()
+    assert s.eval("new Array(3).join('-')") == "--"
+    assert s.eval("[1, undefined, null, 2].join(',')") == "1,,,2"
+
+
 def test_page_location_reflects_url():
     page = myjs.Page("<html><body><script>console.log(location.href, location.pathname, location.protocol)</script></body></html>",
                      url="https://example.com/a/b?q=1")

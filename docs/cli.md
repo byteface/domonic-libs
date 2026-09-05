@@ -188,6 +188,46 @@ bundles (lodash, d3, vue, react, jquery, moment, ...).
 
 ---
 
+## `dlx pyjs` -- transpile Python to JavaScript
+
+```
+dlx pyjs [INPUT] [-o FILE] [--minify] [--no-runtime]
+```
+
+The mirror of `myjs`: a Python subset is walked as a CPython AST, translated
+to ESTree, and emitted as JavaScript by the code generator. A `__py` runtime
+shim (prepended unless `--no-runtime`) carries the Python semantics JS lacks
+-- container truthiness, `range`, `len`, negative indexing, `in`, `//`.
+
+Supported: functions, classes (single inheritance, `@property` /
+`@staticmethod`), `if` / `while` / `for ... in`, comprehensions, f-strings
+**with `:format` specs** (`{x:.2f}`, `{n:>10}`, `{n:,}`, `{n:#06x}`, `{p:.1%}`),
+tuple unpacking, `try` / `except` / `finally`, `raise`, `lambda`, `async` /
+`await`, generators, `import math` / `import random` (mapped onto JS `Math`
+plus a few `__py` helpers). Python semantics are kept where JS differs: `//`
+and `%` floor (`-7 % 3 == 2`), `==` / `<` compare lists and dicts
+element-wise, an integer-keyed dict literal becomes a real `Map`. Builtins:
+`print` `range` `len` `str` `repr` `list` `tuple` `dict` `set` `frozenset`
+`enumerate` `zip` `sorted` `sum` `min`/`max` (with `key=` / `default=`)
+`abs` `round` `int` `float` `bool` `chr` `ord` `hex` `oct` `bin` `divmod`
+`reversed` `map` `filter` `any` `all` `isinstance` `type`. Methods: the
+common `list` / `dict` / `set` / `str` ones (`extend` `insert` `pop`
+`remove` `index` `count` `sort` · `setdefault` `update` `get` `items` ·
+`add` `discard` `union`/`intersection`/`difference` · `title` `zfill`
+`ljust` `center` `splitlines` `removeprefix` `is*` …). Not yet: any other
+`import`, `with`, `**kwargs`, decorators beyond the two above, `%`-string
+formatting, multi-`for` comprehensions, `match` / `case`, multiple
+inheritance, `set` operators on two plain variables (`a & b` stays
+bitwise-and -- use `a.intersection(b)`). JS has one number type, so an
+integral `float` prints without a `.0` and a tuple prints as a list.
+
+```bash
+echo 'print("hi, " + " ".join(sorted(["c","a","b"])))' | dlx pyjs --no-runtime
+# -> __py.print("hi, " + __py.sorted(["c", "a", "b"]).join(" "));
+```
+
+---
+
 ## `dlx dagre` -- lay out and draw a graph
 
 ```

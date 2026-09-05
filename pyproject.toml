@@ -83,3 +83,4 @@ include = ["domonic_libs*"]   # `myjs` is packaged separately (packaging/myjs/)
 domonic_libs = ["py.typed"]
 "domonic_libs.conformance" = ["suite/*.js"]
 "domonic_libs.js262" = ["suite/*.js"]
+"domonic_libs.pyjs" = ["runtime.js"]
