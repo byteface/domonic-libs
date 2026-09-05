@@ -163,6 +163,31 @@ dlx qs stringify '{"filter": {"status": "open"}, "page": 2}'
 
 ---
 
+## `dlx minify` / `dlx fmt` -- JavaScript, pure Python
+
+```
+dlx minify [INPUT] [-o FILE] [--module]
+dlx fmt    [INPUT] [-o FILE] [--module] [--indent N]
+```
+
+Parses JavaScript with the `acorn` port and regenerates it from the AST --
+`minify` strips every optional space, newline and comment; `fmt` re-emits it
+with consistent `--indent` (default 2). No Node, no `terser`, no build step.
+It's not a mangler (identifiers keep their names) -- the win is whitespace and
+comment removal, which is most of what a source-map-free minify buys you, plus
+a dependable formatter.
+
+```bash
+dlx minify src/app.js -o dist/app.min.js     # "... 41231 -> 18004 bytes (56% smaller)" on stderr
+cat messy.js | dlx fmt --indent 4
+```
+
+`parse -> generate` round-trips: the regenerated program parses back to an
+equivalent tree. Verified against the js262 + conformance corpus and real
+bundles (lodash, d3, vue, react, jquery, moment, ...).
+
+---
+
 ## `dlx dagre` -- lay out and draw a graph
 
 ```

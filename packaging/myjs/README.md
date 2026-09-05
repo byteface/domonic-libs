@@ -131,8 +131,9 @@ built-ins, real ES5-style prototype chains, and `Symbol`. Not covered: `Proxy`, 
 
 `myjs` is the runtime layer on top of the [`domonic-libs`](https://pypi.org/project/domonic-libs/)
 `acorn` port — a faithful Python port of the [acorn](https://github.com/acornjs/acorn)
-parser plus a tree-walking evaluator — running on [`domonic`](https://pypi.org/project/domonic/)'s
-DOM. It ships in lockstep with `domonic-libs`.
+parser, a tree-walking evaluator, and a code generator (`parse` / `interpret` /
+`generate`, so JS can go source → AST → source) — running on
+[`domonic`](https://pypi.org/project/domonic/)'s DOM. It ships in lockstep with `domonic-libs`.
 
 Full reference: **[docs/myjs.md](https://github.com/byteface/domonic-libs/blob/master/docs/myjs.md)**.
 MIT licensed.

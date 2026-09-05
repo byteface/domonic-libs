@@ -1,8 +1,9 @@
-"""Acorn Workbench: JavaScript in, ESTree out.
+"""Acorn Workbench: JavaScript in, ESTree out (and back).
 
 Paste ECMAScript (or a whole module) and watch the faithful acorn port tokenize
-and parse it live -- the AST as JSON, the token stream, or a collapsed node-type
-tree. Switch the ``ecmaVersion`` and ``sourceType`` to see the grammar shift.
+and parse it live -- the AST as JSON, the token stream, a collapsed node-type
+tree, or the source *regenerated* from the AST (pretty or minified). Switch the
+``ecmaVersion`` and ``sourceType`` to see the grammar shift.
 """
 
 import html as html_lib
@@ -30,7 +31,7 @@ from domonic.html import (
 from domonic.webapi.clipboard import Clipboard
 
 from domonic_libs import App, on
-from domonic_libs.acorn import Tokenizer, parse
+from domonic_libs.acorn import Tokenizer, generate, parse
 
 app = App("Acorn Workbench", width=1180, height=768, text_select=True)
 clipboard = Clipboard()
@@ -78,7 +79,7 @@ SAMPLES = {
     ),
 }
 
-VIEWS = ["ast", "tokens", "tree"]
+VIEWS = ["ast", "tokens", "tree", "generate", "minify"]
 ECMA = ["2015", "2020", "2022", "2025"]
 
 state = {
@@ -142,7 +143,8 @@ def render(event=None):
     }
 
     try:
-        tree = parse(state["source"], opts).to_dict()
+        parsed = parse(state["source"], opts)
+        tree = parsed.to_dict()
         toks = list(Tokenizer.tokenizer(state["source"], opts).tokenize())
 
         if state["view"] == "ast":
@@ -151,13 +153,19 @@ def render(event=None):
             state["out"] = "\n".join(
                 f"{t.type.label:<14} {t.value!r}" for t in toks if t.type.label != "eof"
             )
-        else:
+        elif state["view"] == "tree":
             state["out"] = "\n".join(_tree(tree))
+        else:  # generate / minify -- AST back to source
+            state["out"] = generate(parsed, minify=(state["view"] == "minify"))
 
-        state["notes"] = (
+        note = (
             f"{len(state['source'])} chars → {_count_nodes(tree)} AST nodes, "
             f"{len(toks) - 1} tokens. ES{state['ecma']}, {opts['sourceType']}."
         )
+        if state["view"] in ("generate", "minify"):
+            pct = 100 - round(100 * len(state["out"]) / max(1, len(state["source"])))
+            note += f"  regenerated: {len(state['out'])} chars ({pct:+d}%)."
+        state["notes"] = note
         state["error"] = ""
     except Exception as exc:  # pragma: no cover - surfaced in the UI
         state["out"] = ""

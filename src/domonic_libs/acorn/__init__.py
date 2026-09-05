@@ -11,9 +11,15 @@ recursive-descent parser (`node`, `scope`, `scopeflags`, `parseutil`, `lval`,
 `expression`, `statement`, `parser`). Output is an ESTree-shaped tree of
 ``Node`` objects; call ``.to_dict()`` for plain nested dicts.
 
-    from domonic_libs.acorn import parse
+    from domonic_libs.acorn import parse, generate
     tree = parse("const f = x => x * 2", {"ecmaVersion": 2022})
-    tree.to_dict()   # {'type': 'Program', 'body': [...], ...}
+    tree.to_dict()          # {'type': 'Program', 'body': [...], ...}
+    generate(tree)          # 'const f = x => x * 2;'   -- back to source
+
+``generate`` is the third leg: ``parse`` reads JS, ``domonic_libs.acorn
+.interpret`` runs an AST, ``generate`` writes an AST back out (``minify=True``
+strips whitespace). ``minify(src_or_path)`` is the one-call shortcut, exposed
+on the CLI as ``dlx minify`` / ``dlx fmt``.
 
 ``domonic_libs.acorn.jsx`` adds the acorn-jsx plugin (``parse_jsx``) and a
 ``jsx_to_python`` transform that rewrites the markup layer to domonic factories.
@@ -21,6 +27,7 @@ recursive-descent parser (`node`, `scope`, `scopeflags`, `parseutil`, `lval`,
 
 from __future__ import annotations
 
+from .generate import generate, minify
 from .identifier import (
     isIdentifierChar,
     isIdentifierStart,
@@ -58,6 +65,7 @@ __all__ = [
     "parse",
     "parse_expression_at",
     "codePointToString",
+    "generate",
     "hasOwn",
     "isArray",
     "isIdentifierChar",
@@ -66,6 +74,7 @@ __all__ = [
     "keywordRelationalOperator",
     "keywords",
     "lineBreak",
+    "minify",
     "nextLineBreak",
     "reservedWords",
     "skipWhiteSpace",

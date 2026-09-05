@@ -8,6 +8,7 @@
     dlx sanitize dirty.html --profile html
     dlx validate isEmail ada@example.com
     dlx qs parse "user[name]=ada&tags[]=a&tags[]=b"
+    dlx minify app.js -o app.min.js
     dlx dagre graph.txt --rankdir LR -o graph.svg
 
 Every text command reads a file argument, or stdin when the argument is ``-`` or
@@ -293,6 +294,32 @@ def _cmd_qs(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# js  (acorn parse -> generate)
+# --------------------------------------------------------------------------
+
+
+def _cmd_js(args) -> int:
+    from .acorn import generate, parse
+
+    src = _read(args.input)
+    opts = {"ecmaVersion": 2022, "locations": True,
+            "sourceType": args.module and "module" or "script",
+            "allowReturnOutsideFunction": True, "allowAwaitOutsideFunction": True}
+    try:
+        tree = parse(src, dict(opts))
+    except Exception as exc:  # noqa: BLE001 -- surface a clean parse error
+        print(f"{_PROG}: parse error: {exc}", file=sys.stderr)
+        return 1
+    out = generate(tree, minify=(args.command == "minify"),
+                   indent=" " * args.indent if args.command == "fmt" else "  ")
+    _write(out, args.output)
+    if args.command == "minify" and args.output not in (None, "-") and src:
+        pct = 100 - round(100 * len(out) / len(src))
+        print(f"{_PROG}: {len(src)} -> {len(out)} bytes ({pct}% smaller)", file=sys.stderr)
+    return 0
+
+
+# --------------------------------------------------------------------------
 # dagre  (edge-list DSL -> laid-out svg)
 # --------------------------------------------------------------------------
 
@@ -439,6 +466,14 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--rankdir", choices=["tb", "bt", "lr", "rl", "TB", "BT", "LR", "RL"], default="tb")
     dg.add_argument("--open", action="store_true", help="draw and open in the browser")
     dg.set_defaults(func=_cmd_dagre)
+
+    for _name, _help in (("minify", "minify JavaScript (parse -> strip -> regenerate, no Node)"),
+                         ("fmt", "reformat JavaScript with consistent indentation")):
+        j = sub.add_parser(_name, help=_help)
+        _io_args(j, input_help="a .js file ('-' or omitted = stdin)")
+        j.add_argument("--module", action="store_true", help="parse as an ES module")
+        j.add_argument("--indent", type=int, default=2, help="fmt: spaces per level (default 2)")
+        j.set_defaults(func=_cmd_js)
 
     return parser
 

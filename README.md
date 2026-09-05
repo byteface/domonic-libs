@@ -85,6 +85,10 @@ dlx validate --list
 dlx qs parse "user[name]=ada&tags[]=a&tags[]=b"
 dlx qs stringify '{"a": 1, "b": {"c": 2}}'
 
+# Minify / format JavaScript -- pure Python, no Node (acorn parse -> generate)
+dlx minify app.js -o app.min.js
+cat src/*.js | dlx fmt --indent 2
+
 # Lay out and draw an arbitrary graph with the dagre port
 printf 'build -> test\ntest -> deploy\nbuild -> lint\nlint -> deploy\n' \
   | dlx dagre --rankdir LR -o pipeline.svg
@@ -227,12 +231,14 @@ A faithful file-for-file port of [dagre](https://github.com/dagrejs/dagre) and t
 ### acorn
 
 ```python
-from domonic_libs.acorn import parse
+from domonic_libs.acorn import parse, generate, minify
 from domonic_libs.acorn.jsx.transform import jsx_to_python
 from domonic_libs.acorn.interpret import run_js
 
-parse("const f = x => x * 2", {"ecmaVersion": 2022}).to_dict()
-# {'type': 'Program', 'body': [{'type': 'VariableDeclaration', ...}], ...}
+tree = parse("const f = x => x * 2", {"ecmaVersion": 2022})
+tree.to_dict()      # {'type': 'Program', 'body': [{'type': 'VariableDeclaration', ...}], ...}
+generate(tree)      # 'const f = x => x * 2;'   -- AST back to source
+minify("app.js")    # read a file, return it whitespace-stripped
 
 jsx_to_python("<div className='box'>{items}</div>")
 # "div(items, _class='box')"
@@ -244,6 +250,7 @@ str(doc.body)  # '<body><button>Go</button></body>'
 
 A faithful port of [acorn](https://github.com/acornjs/acorn) 8.18.0 (tokenizer, the `regexp.js` grammar validator, the recursive-descent parser) plus the [acorn-jsx](https://github.com/acornjs/acorn-jsx) plugin -- a pure-Python ECMAScript / JSX front end producing an ESTree tree. Its main job is stress-testing `domonic.javascript`; most of what it surfaced was fixed in domonic 1.6 and 1.7, and it keeps finding more ([docs/javascript-wrinkles.md](docs/javascript-wrinkles.md)).
 
+- **`generate`** is the third leg -- `parse` reads JS, `interpret` runs an AST, `generate` writes an AST back out (`minify=True` strips whitespace; `indent=` sets the pretty width). It round-trips: `parse(generate(ast))` gives an equivalent tree, verified across the whole js262 + conformance corpus and real bundles (lodash, d3, vue, react, jquery, ...). On the CLI: `dlx minify app.js -o app.min.js` and `dlx fmt` -- a JavaScript minifier / formatter in pure Python, no Node.
 - **`jsx_to_python`** rewrites the JSX *markup* layer to `domonic.html` factories (or `h(...)` with `mode="h"`), passing JS expressions inside `{ ... }` through verbatim.
 - **`interpret.run_js`** is a tree-walking evaluator for the practical subset of ECMAScript -- expressions, functions + closures, control flow, objects / arrays, `this`, `new`, `class` (with `extends` / `super` / fields), and the JS coercion rules. It runs against the **whole** domonic runtime: the global object exposes ~190 constructors auto-collected from `domonic.javascript` / `domonic.webapi.*` / `domonic.dom` (`URL`, `Headers`, `Request` / `Response`, `Blob` / `FileReader`, `XMLHttpRequest`, `EventSource`, `Event` / `MouseEvent`, `MutationObserver` / `ResizeObserver` / `IntersectionObserver`, `Range` / `TreeWalker`, `DOMRect` / `DOMMatrix`, `XPathEvaluator`, `Path2D`, `FontFace`, `Notification`, `Worker`, …), forwards to domonic's real `window` for the rest (`location`, `navigator`, `atob`, `getComputedStyle`, `setTimeout`), and reaches the element surface directly -- `el.style` / `getComputedStyle` (CSSOM in `style.py`), `el.classList` / `el.dataset`, `el.addEventListener` + `dispatchEvent`. `console` and `document` are isolated per run; `document` also forwards to a real backing `Document` (`createComment`, `createEvent`, `evaluate`, …). `document.createElement(...).appendChild(...)` builds a real Python object tree. There is a pragmatic event loop -- `Promise`, `async` / `await`, `setTimeout` -- with microtasks ahead of timers, and ES module `import` / `export`. Generators, ES5-style prototype chains (`Foo.prototype.bar = ...`), `Symbol`, and getter/setter accessors all work; not covered: `Proxy`, `with`. Running real DOM scripts this way is a live stress test of `style.py`, `domonic.events`, `domonic.webapi`, and the DOM.
 
