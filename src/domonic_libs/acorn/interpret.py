@@ -2923,6 +2923,44 @@ def _generic_prototype_for(ctor):
     return proto
 
 
+def _make_math_ns():
+    """``Math`` -- delegates to ``domonic.javascript.Math`` for everything (the
+    interpreter deleted its own ``Math`` shim in the 1.6 migration), but snaps
+    ``cbrt`` / ``log2`` / ``log10`` back to the correctly-rounded result for
+    the exact cases where the true answer is a whole number. Python's ``math``
+    is backed by the platform libm, and glibc's ``cbrt(27)`` is
+    ``3.0000000000000004`` (one ULP high) where V8 -- and macOS's libm --
+    give exactly ``3``. Only snaps when the rounded result provably squares/
+    cubes/exponentiates back to the input, so irrational results are
+    untouched. Remove once ``domonic.javascript.Math`` rounds these itself
+    (tracked in ``docs/javascript-wrinkles.md``)."""
+    import domonic.javascript as _js
+
+    def _snap(fn, inverse):
+        def wrapped(x=UNDEFINED, *_a, **_kw):
+            r = fn(x)
+            try:
+                n = round(r)
+                if inverse(n) == js_number(x):
+                    return float(n)
+            except (TypeError, ValueError, OverflowError):
+                pass
+            return r
+        return wrapped
+
+    overrides = {
+        "cbrt": _snap(_js.Math.cbrt, lambda n: n ** 3),
+        "log2": _snap(_js.Math.log2, lambda n: 2 ** n),
+        "log10": _snap(_js.Math.log10, lambda n: 10 ** n),
+    }
+
+    class _MathNS:
+        def __getattr__(self, name):
+            return overrides.get(name) or getattr(_js.Math, name)
+
+    return _MathNS()
+
+
 def _object_ctor_call(v=UNDEFINED, *_, _this=UNDEFINED, _new=False):
     """``Object(value)`` -- real JS: `undefined`/`null` box to a fresh empty
     object, anything already object-shaped comes back unchanged (a full,
@@ -3237,7 +3275,7 @@ class _Window:
             "window": self,
             "self": self,
             "globalThis": self,
-            "Math": _js.Math,   # domonic 1.6: Math.max/min variadic, full method set
+            "Math": _make_math_ns(),   # domonic's Math + a correctly-rounded cbrt/log2/log10
             "Object": _make_object_ns(),
             "Array": _array_ctor,
             "Symbol": _symbol_ctor,

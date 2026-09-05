@@ -62,6 +62,10 @@ test262("Math.max / Math.min", function () {
 test262("Math power / roots / logs", function () {
   assert.sameValue(Math.pow(2, 10), 1024);
   assert.sameValue(Math.sqrt(144), 12);
+  // cbrt / log2 / log10 land on an exact integer here; the platform libm
+  // behind Python's `math` can be a ULP off (glibc's `cbrt(27)` is
+  // `3.0000000000000004`), so the interpreter snaps the provably-exact
+  // cases back, matching V8. `_make_math_ns` in interpret.py.
   assert.sameValue(Math.cbrt(27), 3);
   assert.sameValue(Math.hypot(3, 4), 5);
   assert.sameValue(Math.log2(8), 3);

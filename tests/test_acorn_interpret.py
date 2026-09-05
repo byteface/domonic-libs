@@ -825,3 +825,21 @@ def test_commonjs_require_caches_and_tolerates_circular_requires(tmp_path):
     )
     path = str(tmp_path / "a.js").replace("\\", "\\\\")
     assert out(f'var a = require("{path}"); console.log(a.b.sawFromA);', commonjs=True) == ["1"]
+
+
+def test_math_cbrt_log_are_correctly_rounded_for_exact_cases():
+    # Python's `math` is backed by the platform libm, and glibc's `cbrt(27)`
+    # is `3.0000000000000004` (a ULP high) where V8 gives exactly `3` -- this
+    # failed CI on Linux but not macOS. `_make_math_ns` snaps the
+    # provably-exact integer cases back; irrational results are untouched, and
+    # every other `Math` method passes straight through to domonic's.
+    assert out(
+        "console.log("
+        "  Math.cbrt(27) === 3, Math.cbrt(-8) === -2, Math.cbrt(64) === 4,"
+        "  Math.log2(8) === 3, Math.log2(1024) === 10,"
+        "  Math.log10(1000) === 3, Math.log10(1e6) === 6"
+        ");"
+    ) == ["true true true true true true true"]
+    # not a perfect cube / power -> left alone
+    assert out("console.log(Math.cbrt(2) > 1.259 && Math.cbrt(2) < 1.26)") == ["true"]
+    assert out("console.log(Math.sqrt(144), Math.pow(2, 10), Math.max(1, 9, 3))") == ["12 1024 9"]
