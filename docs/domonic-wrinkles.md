@@ -8,6 +8,21 @@ Most of the original list was fixed in **domonic 1.5.0**, **1.6.x**, and **1.7.0
 
 `domonic.parseString` supports `html5lib`, `html.parser`, `lxml_html`, `html5_parser`, `markupever`, `selectolax`, `turbohtml`, `justhtml`, and `expat`. With `parser="auto"` (the default) it tries them in order and swallows `ImportError`, so on a machine where only `html5lib` is installed you are always on `html5lib` without any signal. Not a bug, but worth knowing when a parser choice is suspected: install the alternative and pass `parser=` explicitly to compare, or call `domonic.get_active_parser()` afterwards. In this repo only `html5lib` (plus stdlib `html.parser` / `expat`) is available by default.
 
+## 1b. Third-party parsers need a public registration hook
+
+`src/domonic_libs/htmlparser2` can build domonic DOM nodes directly and benchmarks competitively with domonic's existing parser backends, but integration currently has to monkey-patch `domonic.parseString` and `domonic.set_default_parser` from outside the domonic package.
+
+The clean upstream shape would be a parser registry:
+
+```python
+from domonic import domonic
+
+domonic.register_parser("htmlparser2", parse_func)
+domonic.parseString(markup, parser="htmlparser2")
+```
+
+That would let `domonic-libs` provide optional parsers without editing domonic's internal `parseString` parser table, and would let other parser experiments plug in cleanly for benchmarking. A useful API would also expose aliases and an optional `prefer_auto` / priority value so `parser="auto"` can try registered parsers deliberately rather than each package wrapping `parseString` itself.
+
 ## 2. HTML comments inside MathML survive serialisation
 
 Wikipedia MathML contains `<mo>&#x2211;<!-- &#x2211; --></mo>` style comments. domonic keeps the `<!-- ... -->` nodes through parse -> serialise. This is spec-correct (the DOM keeps comment nodes; `innerHTML` round-trips them), but it bloats the markup; a reader that passes MathML through may want to drop comment nodes itself.
@@ -59,6 +74,28 @@ A port that must match browser output byte-for-byte (like DOMPurify's fixtures) 
 * `ctx.getImageData(...)` returns a **fresh zero-filled** `ImageData`, not the pixels of anything previously drawn -- there is no backing buffer to read from.
 * `ImageData.data` is a plain `bytearray`, where the browser's is a `Uint8ClampedArray`. A `Uint8ClampedArray` coerces and clamps on assignment (`d[i] = 3.7` stores `4`, `d[i] = 300` stores `255`); a `bytearray` raises `TypeError` on a non-integer and `ValueError` outside `0..255`. Through the interpreter this bites quietly: `d[i] = (x * 7) % 256` no-ops, because the interpreter's `%` (like all its arithmetic -- JS has one number type) yields a Python `float`, and `bytearray.__setitem__` rejects `float` -- the exception is swallowed and the pixel stays `0`. Wrap pixel writes in `int(...)` (`d[i] = int((x * 7) % 256)`), which is idiomatic for byte values anyway. The clean upstream fix is for `ImageData.data` to be a clamping typed-array view.
 
+## 9. `import domonic.html as html_tags` resolves to the exported `html` class
+
+The htmlparser2 domhandler port needs dynamic tag lookup (`getattr(html_tags, name)`) for arbitrary element names. This looks right:
+
+```python
+import domonic.html as html_tags
+html_tags.div
+```
+
+but resolves `html_tags` to the package-exported `domonic.html.html` class, not the `domonic.html` module, so `html_tags.div` fails. The workaround is:
+
+```python
+from importlib import import_module
+html_tags = import_module("domonic.html")
+```
+
+This is more of a Python package export/import wrinkle than a DOM-compliance bug, but it is easy to trip over in faithful JS ports that expect a namespace object full of constructors.
+
+One related behaviour: `Element.tagName` is read-only, which is spec-shaped, so custom XML/feed tags cannot be made by creating a `div()` then assigning `tagName = "rss"`. The htmlparser2 port creates dynamic `Element` subclasses instead (`type("rss", (Element,), {"name": "rss"})`), which serialises as `<rss>...</rss>` and keeps domonic nodes underneath.
+
+Another related porting wrinkle: `Element.children` / `DocumentFragment.children` are read-only live views. That is browser-shaped, but domhandler's node model stores children in a writable `.children` array. The htmlparser2 port uses domonic's `args` as the mutable backing store and reads through `children` when domonic provides it.
+
 ---
 
 ## Resolved in domonic 1.7.0
@@ -108,4 +145,3 @@ The port work below surfaced these; each was then fixed upstream.
 ## Readability port notes (not domonic bugs)
 
 `src/domonic_libs/readability.py` is a faithful port of Mozilla's Readability.js, including `_isProbablyVisible`, which removes any node with `display: none`, `visibility: hidden`, `hidden`, or `aria-hidden="true"`. Wikipedia ships each formula as MathML hidden behind `display: none` plus an `aria-hidden` raster fallback, so **stock Readability discards all of the math** (Firefox Reader View has the same limitation). `content/content.py` works around this by rewriting the math islands *before* handing the document to Readability: display formulas become a visible `div.math-block` carrying the MathML, inline formulas become TeX in `\(...\)` delimiters for MathJax.
-

@@ -16,6 +16,7 @@
 | `domonic_libs.dagre` | [dagrejs/dagre](https://github.com/dagrejs/dagre) + [dagrejs/graphlib](https://github.com/dagrejs/graphlib) | MIT |
 | `domonic_libs.acorn` | [acornjs/acorn](https://github.com/acornjs/acorn) | MIT |
 | `domonic_libs.acorn.jsx` | [acornjs/acorn-jsx](https://github.com/acornjs/acorn-jsx) | MIT |
+| `domonic_libs.htmlparser2` | [fb55/htmlparser2](https://github.com/fb55/htmlparser2) | MIT |
 
 The vendored upstream test fixtures under `tests/fixtures/` are covered by the same license as the project they were taken from.
 
@@ -249,7 +250,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## MIT License
 
-Applies to: `domonic_libs.marked`, `domonic_libs.turndown` (and `turndown-plugin-gfm`, and collapse-whitespace by Luc Thevenard), `domonic_libs.validator`, `domonic_libs.preact`, `domonic_libs.mermaid`, `domonic_libs.dagre` (and `graphlib`).
+Applies to: `domonic_libs.marked`, `domonic_libs.turndown` (and `turndown-plugin-gfm`, and collapse-whitespace by Luc Thevenard), `domonic_libs.validator`, `domonic_libs.preact`, `domonic_libs.mermaid`, `domonic_libs.dagre` (and `graphlib`), `domonic_libs.htmlparser2`.
 
 Copyright holders, per project:
 
@@ -260,6 +261,7 @@ Copyright holders, per project:
 - preact: Copyright (c) 2015-present Jason Miller
 - mermaid: Copyright (c) 2014-2022 Knut Sveidqvist
 - dagre / graphlib: Copyright (c) 2012-2014 Chris Pettitt
+- htmlparser2: Copyright (c) 2010-2024 Felix Böhm and contributors
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining a copy of

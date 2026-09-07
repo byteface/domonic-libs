@@ -1,8 +1,3 @@
-from .dompurify import DOMPurify, createDOMPurify, sanitize
-from .readability import Readability
-from .turndown import TurndownService, turndown
-from . import validator
-
 def _read_version() -> str:
     from pathlib import Path
     f = Path(__file__).resolve().parents[2] / "VERSION"   # repo-root source checkout
@@ -26,6 +21,7 @@ __all__ = [
     "TurndownService",
     "__version__",
     "createDOMPurify",
+    "htmlparser2",
     "on",
     "sanitize",
     "turndown",
@@ -33,7 +29,31 @@ __all__ = [
 ]
 
 
+_LAZY_EXPORTS = {
+    "DOMPurify": (".dompurify", "DOMPurify"),
+    "createDOMPurify": (".dompurify", "createDOMPurify"),
+    "sanitize": (".dompurify", "sanitize"),
+    "Readability": (".readability", "Readability"),
+    "TurndownService": (".turndown", "TurndownService"),
+    "turndown": (".turndown", "turndown"),
+    "htmlparser2": (".htmlparser2", None),
+    "validator": (".validator", None),
+}
+
+
 def __getattr__(name):
+    if name in _LAZY_EXPORTS:
+        from importlib import import_module
+
+        module_name, attr_name = _LAZY_EXPORTS[name]
+        module = import_module(module_name, __name__)
+        for export_name, (export_module_name, export_attr_name) in _LAZY_EXPORTS.items():
+            if export_module_name == module_name and export_attr_name is not None:
+                globals()[export_name] = getattr(module, export_attr_name)
+        value = module if attr_name is None else globals()[name]
+        globals()[name] = value
+        return value
+
     # The app wrapper is optional -- it pulls in pywebview. The ports above are
     # always available; App / Event / on are loaded lazily so that
     # ``import domonic_libs`` and ``domonic_libs.dompurify`` etc. work with only

@@ -22,7 +22,7 @@ Behaviours that trip up the ports are logged to feed back upstream: DOM ones in 
 
 ## Install
 
-To get all the libraries like Mermaid, preact, turndown, marked, validator, qs, dompurify, readability etc...
+To get all the libraries like Mermaid, preact, turndown, marked, validator, qs, dompurify, readability, htmlparser2 etc...
 
 ```bash
 pip install domonic-libs
@@ -159,6 +159,36 @@ service.use(gfm)  # tables, strikethrough, task lists (turndown-plugin-gfm port)
 ```
 
 `turndown` is a file-for-file port of [turndown.js](https://github.com/mixmark-io/turndown) and runs its upstream fixture suite (see `tests/test_turndown.py`). Together with Readability it is useful for content extraction, reader views, local archives, and LLM-friendly page summaries.
+
+### htmlparser2
+
+```python
+from domonic_libs.htmlparser2 import DomUtils, Parser, parseDocument
+
+events = []
+Parser({
+    "onopentag": lambda name, attrs, implied: events.append((name, attrs)),
+    "ontext": lambda text: events.append(text),
+}).end('<p class="lead">Hello &amp; welcome</p>')
+
+doc = parseDocument("<ul><li>One<li>Two</ul>")
+items = DomUtils.getElementsByTagName("li", doc)
+
+# Let domonic.parseString use it as a backend.
+from domonic import domonic
+from domonic_libs.htmlparser2 import install_domonic_parser
+
+install_domonic_parser()
+page = domonic.parseString("<main><h1>Hello</h1></main>", parser="htmlparser2")
+```
+
+A faithful-shape port of [htmlparser2](https://github.com/fb55/htmlparser2) -- callback parser, tokenizer state machine, domhandler, domutils traversal/query/stringify/mutation helpers, feed parser, implied-close rules, void elements, raw-text / RCDATA / plaintext parsing, and SVG/MathML casing rules. It deliberately leans on domonic nodes, `domonic.javascript.Map` and `Set`.
+
+Benchmark it against domonic's parser backends:
+
+```bash
+./.venv/bin/python scripts/benchmark_htmlparser2.py ../projects/domonic/benchmarks/html_meaty_page.html --iterations 3
+```
 
 ### marked
 
