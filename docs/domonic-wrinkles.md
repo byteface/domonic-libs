@@ -10,7 +10,7 @@ Most of the original list was fixed in **domonic 1.5.0**, **1.6.x**, and **1.7.0
 
 ## 1b. Third-party parsers need a public registration hook
 
-`src/domonic_libs/htmlparser2` can build domonic DOM nodes directly and benchmarks competitively with domonic's existing parser backends, but integration currently has to monkey-patch `domonic.parseString` and `domonic.set_default_parser` from outside the domonic package.
+`src/htmlparser2` can build domonic DOM nodes directly and benchmarks competitively with domonic's existing parser backends, but integration currently has to monkey-patch `domonic.parseString` and `domonic.set_default_parser` from outside the domonic package.
 
 The clean upstream shape would be a parser registry:
 

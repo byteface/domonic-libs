@@ -102,6 +102,29 @@ class TestCli(unittest.TestCase):
         self.assertIn("a=1", out)
         self.assertIn("b%5Bc%5D=2", out)
 
+    def test_htmlparse_outputs_normalized_html_text_and_stats(self):
+        html = "<main><h1>Hello</h1><p>A &amp; B</p></main>"
+
+        code, out, _ = run(["htmlparse"], stdin=html)
+        self.assertEqual(code, 0)
+        self.assertIn("<main>", out)
+        self.assertIn("A & B", out)
+
+        code, out, _ = run(["htmlparse", "--text"], stdin=html)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "HelloA & B")
+
+        code, out, _ = run(["htmlparse", "--stats"], stdin=html)
+        self.assertEqual(code, 0)
+        stats = json.loads(out)
+        self.assertEqual(stats["counts"]["tag"], 3)
+        self.assertGreaterEqual(stats["nodes"], 6)
+
+    def test_htmlparse_domonic_backend(self):
+        code, out, _ = run(["htmlparse", "--domonic-backend"], stdin="<section><h1>Hi</h1></section>")
+        self.assertEqual(code, 0)
+        self.assertIn("<section>", out)
+
     def test_dagre_edge_list_to_svg(self):
         code, out, _ = run(["dagre", "--rankdir", "LR"], stdin="a -> b\na -> c\nb -> d\nc -> d")
         self.assertEqual(code, 0)

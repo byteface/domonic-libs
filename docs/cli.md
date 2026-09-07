@@ -163,6 +163,25 @@ dlx qs stringify '{"filter": {"status": "open"}, "page": 2}'
 
 ---
 
+## `dlx htmlparse` -- HTML through htmlparser2
+
+```
+dlx htmlparse [INPUT] [-o FILE] [--stats] [--text]
+              [--domonic-backend] [--prefer-auto]
+```
+
+Parses HTML with the standalone `htmlparser2` port. Install `htmlparser2` alongside `domonic-libs` to enable this command. By default it re-emits the parsed HTML. `--text` prints `textContent`; `--stats` prints JSON with byte size, total node count, node type counts, and the first `<title>`.
+
+`--domonic-backend` installs the htmlparser2 backend into `domonic.parseString` for that process and parses through `parser="htmlparser2"`. `--prefer-auto` makes that temporary install prefer htmlparser2 for `parser="auto"` as well.
+
+```bash
+dlx htmlparse page.html --stats
+cat page.html | dlx htmlparse --text
+dlx htmlparse page.html --domonic-backend -o normalized.html
+```
+
+---
+
 ## `dlx minify` / `dlx fmt` -- JavaScript, pure Python
 
 ```

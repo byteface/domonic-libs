@@ -21,7 +21,6 @@ __all__ = [
     "TurndownService",
     "__version__",
     "createDOMPurify",
-    "htmlparser2",
     "on",
     "sanitize",
     "turndown",
@@ -36,7 +35,6 @@ _LAZY_EXPORTS = {
     "Readability": (".readability", "Readability"),
     "TurndownService": (".turndown", "TurndownService"),
     "turndown": (".turndown", "turndown"),
-    "htmlparser2": (".htmlparser2", None),
     "validator": (".validator", None),
 }
 

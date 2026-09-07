@@ -29,5 +29,6 @@ jobs:
         run: |
           python -m pip install -e ".[dev]"
           python -m pip install -e ./packaging/myjs   # standalone myjs, for tests/test_myjs.py
+          python -m pip install -e ./packaging/htmlparser2
       - name: Run tests
         run: python -m pytest

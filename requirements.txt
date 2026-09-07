@@ -5,6 +5,10 @@
 # (tests/test_myjs.py). Its `domonic-libs` dep is satisfied by `-e .[dev]` above.
 -e ./packaging/myjs
 
+# `htmlparser2` also ships as its own distribution; install it editable for the
+# parser tests and `dlx htmlparse`.
+-e ./packaging/htmlparser2
+
 # Release tooling.
 build
 twine

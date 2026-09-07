@@ -8,6 +8,7 @@
     dlx sanitize dirty.html --profile html
     dlx validate isEmail ada@example.com
     dlx qs parse "user[name]=ada&tags[]=a&tags[]=b"
+    dlx htmlparse page.html --stats
     dlx minify app.js -o app.min.js
     dlx pyjs script.py -o script.js
     dlx dagre graph.txt --rankdir LR -o graph.svg
@@ -295,6 +296,64 @@ def _cmd_qs(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# htmlparser2
+# --------------------------------------------------------------------------
+
+
+def _cmd_htmlparse(args) -> int:
+    try:
+        from htmlparser2 import DomUtils, ElementType, getInnerHTML, parseDocument, textContent
+    except ImportError as exc:
+        print(
+            f"{_PROG}: htmlparse needs the standalone htmlparser2 package. "
+            "Install it with: pip install htmlparser2",
+            file=sys.stderr,
+        )
+        return 2
+
+    html = _read(args.input)
+    doc = parseDocument(html)
+
+    if args.stats:
+        counts: dict[str, int] = {}
+
+        def walk(node):
+            node_type = getattr(node, "type", None) or (
+                ElementType.Text if getattr(node, "nodeType", None) == 3 else "node"
+            )
+            counts[node_type] = counts.get(node_type, 0) + 1
+            for child in DomUtils.getChildren(node):
+                walk(child)
+
+        walk(doc)
+        title = DomUtils.getElementsByTagName("title", doc, True, 1)
+        payload = {
+            "bytes": len(html.encode("utf-8")),
+            "nodes": sum(counts.values()),
+            "counts": counts,
+            "title": textContent(title[0]).strip() if title else "",
+        }
+        _write(json.dumps(payload, indent=2, sort_keys=True), args.output)
+        return 0
+
+    if args.text:
+        _write(textContent(doc), args.output)
+        return 0
+
+    if args.domonic_backend:
+        from domonic import domonic
+        from htmlparser2 import install_domonic_parser
+
+        install_domonic_parser(prefer_auto=args.prefer_auto)
+        page = domonic.parseString(html, parser="auto" if args.prefer_auto else "htmlparser2")
+        _write(str(page), args.output)
+        return 0
+
+    _write(getInnerHTML(doc), args.output)
+    return 0
+
+
+# --------------------------------------------------------------------------
 # js  (acorn parse -> generate)
 # --------------------------------------------------------------------------
 
@@ -477,6 +536,14 @@ def build_parser() -> argparse.ArgumentParser:
     qsp.add_argument("-o", "--output", metavar="FILE")
     qsp.add_argument("--depth", type=int, default=5, help="max nesting depth for parse")
     qsp.set_defaults(func=_cmd_qs)
+
+    hp = sub.add_parser("htmlparse", help="parse HTML with the htmlparser2 port")
+    _io_args(hp)
+    hp.add_argument("--stats", action="store_true", help="print parser stats as JSON")
+    hp.add_argument("--text", action="store_true", help="print textContent instead of HTML")
+    hp.add_argument("--domonic-backend", action="store_true", help="parse through domonic.parseString(parser='htmlparser2')")
+    hp.add_argument("--prefer-auto", action="store_true", help="with --domonic-backend, install htmlparser2 as parser='auto' priority")
+    hp.set_defaults(func=_cmd_htmlparse)
 
     dg = sub.add_parser("dagre", help="lay out a graph (lines of 'a -> b') and draw it as SVG")
     _io_args(dg, input_help="edge-list file: one 'a -> b' or 'a b' per line ('#label' for edge text)")

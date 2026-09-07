@@ -22,7 +22,7 @@ Behaviours that trip up the ports are logged to feed back upstream: DOM ones in 
 
 ## Install
 
-To get all the libraries like Mermaid, preact, turndown, marked, validator, qs, dompurify, readability, htmlparser2 etc...
+To get the umbrella libraries like Mermaid, preact, turndown, marked, validator, qs, dompurify, readability etc...
 
 ```bash
 pip install domonic-libs
@@ -43,7 +43,7 @@ python3 -m venv .venv
 make test
 ```
 
-The app wrapper API is in [docs/app.md](docs/app.md); the `dlx` CLI in [docs/cli.md](docs/cli.md). [`myjs`](#myjs) -- a JavaScript interpreter with an `ffi` bridge to native C -- ships as its own package (`pip install myjs`), built from `src/myjs/` via `packaging/myjs/`; see [docs/myjs.md](docs/myjs.md) and [docs/publishing.md](docs/publishing.md). Ported modules keep their upstream licenses -- see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+The app wrapper API is in [docs/app.md](docs/app.md); the `dlx` CLI in [docs/cli.md](docs/cli.md). [`myjs`](#myjs) -- a JavaScript interpreter with an `ffi` bridge to native C -- ships as its own package (`pip install myjs`), built from `src/myjs/` via `packaging/myjs/`. [`htmlparser2`](#htmlparser2) also ships standalone (`pip install htmlparser2`), built from `src/htmlparser2/` via `packaging/htmlparser2/`. See [docs/myjs.md](docs/myjs.md), [docs/htmlparser2.md](docs/htmlparser2.md), and [docs/publishing.md](docs/publishing.md). Ported modules keep their upstream licenses -- see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Command line -- `dlx`
 
@@ -84,6 +84,11 @@ dlx validate --list
 # Query strings
 dlx qs parse "user[name]=ada&tags[]=a&tags[]=b"
 dlx qs stringify '{"a": 1, "b": {"c": 2}}'
+
+# Parse HTML with the htmlparser2 port
+pipx inject domonic-libs htmlparser2
+dlx htmlparse page.html --stats
+cat page.html | dlx htmlparse --text
 
 # Minify / format JavaScript -- pure Python, no Node (acorn parse -> generate)
 dlx minify app.js -o app.min.js
@@ -162,8 +167,15 @@ service.use(gfm)  # tables, strikethrough, task lists (turndown-plugin-gfm port)
 
 ### htmlparser2
 
+Standalone install:
+
+```bash
+pip install htmlparser2
+htmlparser2 page.html --stats
+```
+
 ```python
-from domonic_libs.htmlparser2 import DomUtils, Parser, parseDocument
+from htmlparser2 import DomUtils, Parser, parseDocument
 
 events = []
 Parser({
@@ -176,13 +188,23 @@ items = DomUtils.getElementsByTagName("li", doc)
 
 # Let domonic.parseString use it as a backend.
 from domonic import domonic
-from domonic_libs.htmlparser2 import install_domonic_parser
+from htmlparser2 import install_domonic_parser
 
 install_domonic_parser()
 page = domonic.parseString("<main><h1>Hello</h1></main>", parser="htmlparser2")
 ```
 
-A faithful-shape port of [htmlparser2](https://github.com/fb55/htmlparser2) -- callback parser, tokenizer state machine, domhandler, domutils traversal/query/stringify/mutation helpers, feed parser, implied-close rules, void elements, raw-text / RCDATA / plaintext parsing, and SVG/MathML casing rules. It deliberately leans on domonic nodes, `domonic.javascript.Map` and `Set`.
+A faithful-shape port of [htmlparser2](https://github.com/fb55/htmlparser2) -- callback parser, tokenizer state machine, domhandler, domutils traversal/query/stringify/mutation helpers, feed parser, implied-close rules, void elements, raw-text / RCDATA / plaintext parsing, and SVG/MathML casing rules. It builds domonic nodes directly. The first port leaned on `domonic.javascript.Map` / `Set`; the benchmarked hot tables now use native Python containers where the behaviour is equivalent.
+
+On the CLI:
+
+```bash
+htmlparser2 page.html --stats
+dlx htmlparse page.html              # parse and re-emit HTML
+dlx htmlparse page.html --text       # textContent
+dlx htmlparse page.html --stats      # node/type counts as JSON
+dlx htmlparse page.html --domonic-backend
+```
 
 Benchmark it against domonic's parser backends:
 

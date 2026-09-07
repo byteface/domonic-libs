@@ -1,4 +1,4 @@
-from domonic_libs.htmlparser2 import DomUtils, Parser, parseDocument, parseFeed
+from htmlparser2 import DomUtils, Parser, parseDocument, parseFeed
 
 
 def show_streaming_callbacks():

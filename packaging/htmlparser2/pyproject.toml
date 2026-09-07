@@ -1,0 +1,54 @@
+# Build config for the standalone `htmlparser2` distribution.
+#
+# `src` here is a symlink to ../../src, so src/htmlparser2 is the single source
+# of truth and this project packages only `htmlparser2*`.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "htmlparser2"
+dynamic = ["version"]
+description = "A faithful-shape Python port of htmlparser2, backed by domonic DOM nodes"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "byteface", email = "byteface@googlemail.com" },
+]
+requires-python = ">=3.10"
+keywords = ["html", "parser", "htmlparser2", "dom", "domonic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+dependencies = [
+    "domonic>=1.7.0",
+]
+
+[project.scripts]
+htmlparser2 = "htmlparser2.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/byteface/domonic-libs/tree/master/src/htmlparser2"
+Source = "https://github.com/byteface/domonic-libs"
+Documentation = "https://github.com/byteface/domonic-libs/blob/master/docs/htmlparser2.md"
+Tracker = "https://github.com/byteface/domonic-libs/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["htmlparser2*"]
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }

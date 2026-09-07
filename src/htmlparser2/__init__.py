@@ -11,6 +11,23 @@ state-method layout, including raw-text / RCDATA / plaintext paths.
 
 from __future__ import annotations
 
+
+def _read_version() -> str:
+    from pathlib import Path
+
+    f = Path(__file__).resolve().parents[2] / "VERSION"
+    if f.is_file():
+        return f.read_text().strip()
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("htmlparser2")
+    except PackageNotFoundError:
+        return "0+unknown"
+
+
+__version__ = _read_version()
+
 from .parser import Handler, Parser, ParserOptions
 from .tokenizer import QuoteType, Tokenizer
 from .domhandler import DomHandler, DomHandlerOptions, DefaultHandler, ElementType
@@ -79,6 +96,7 @@ __all__ = [
     "ParserOptions",
     "QuoteType",
     "Tokenizer",
+    "__version__",
     "append",
     "appendChild",
     "createDomStream",

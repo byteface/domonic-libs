@@ -1,4 +1,4 @@
-from domonic_libs.htmlparser2 import (
+from htmlparser2 import (
     DomHandler,
     DomUtils,
     ElementType,
@@ -282,7 +282,7 @@ def test_domutils_compat_query_stringify_and_mutation_helpers():
 
 def test_install_domonic_parser_backend_for_parse_string():
     from domonic import domonic
-    from domonic_libs.htmlparser2 import install_domonic_parser, uninstall_domonic_parser
+    from htmlparser2 import install_domonic_parser, uninstall_domonic_parser
 
     original_default = domonic.get_default_parser()
     try:
@@ -301,7 +301,7 @@ def test_install_domonic_parser_backend_for_parse_string():
 
 def test_install_domonic_parser_can_prefer_auto():
     from domonic import domonic
-    from domonic_libs.htmlparser2 import install_domonic_parser, uninstall_domonic_parser
+    from htmlparser2 import install_domonic_parser, uninstall_domonic_parser
 
     original_default = domonic.get_default_parser()
     try:

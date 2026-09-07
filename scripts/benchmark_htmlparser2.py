@@ -8,7 +8,7 @@ from pathlib import Path
 
 from domonic import domonic
 
-from domonic_libs.htmlparser2 import install_domonic_parser
+from htmlparser2 import install_domonic_parser
 
 
 DEFAULT_PARSERS = [

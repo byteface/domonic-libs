@@ -48,6 +48,7 @@ classifiers = [
 dlx = "domonic_libs.cli:main"
 domonic-libs = "domonic_libs.cli:main"
 # `myjs` ships as its own distribution (packaging/myjs/) -- `pip install myjs`.
+# `htmlparser2` ships as its own distribution (packaging/htmlparser2/).
 
 [project.urls]
 Homepage = "https://github.com/byteface/domonic-libs"
@@ -77,7 +78,8 @@ version = { file = "VERSION" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["domonic_libs*"]   # `myjs` is packaged separately (packaging/myjs/)
+include = ["domonic_libs*"]
+exclude = ["myjs*", "htmlparser2*"]
 
 [tool.setuptools.package-data]
 domonic_libs = ["py.typed"]
